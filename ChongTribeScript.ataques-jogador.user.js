@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.2.0
+// @version      1.2.1
 // @description  Analisa ataques e apoios compartilhados nas aldeias de um jogador, com horários, tropas, filtros e agrupamentos.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -15,8 +15,9 @@
     'use strict';
 
     const SCRIPT_ID = 'cts-ataques-jogador';
-    const REQUEST_DELAY_MS = 260;
-    const REQUEST_CONCURRENCY = 3;
+    const REQUEST_DELAY_MS = 1400;
+    const REQUEST_JITTER_MS = 700;
+    const REQUEST_CONCURRENCY = 1;
     const TYPE_ORDER = ['noble', 'large', 'medium', 'small', 'unknown'];
     const TYPE_LABELS = {
         noble: 'Possível nobre',
@@ -44,6 +45,8 @@
         cancelled: false,
         processed: 0,
         failures: 0,
+        supportDetailsLoaded: false,
+        supportDetailsLoading: false,
         playerName: '',
         villages: [],
         commands: [],
@@ -84,7 +87,12 @@
         });
     }
 
+    function requestPause() {
+        return sleep(REQUEST_DELAY_MS + Math.floor(Math.random() * REQUEST_JITTER_MS));
+    }
+
     function gameUrl(href) {
+        if (!href) return '';
         try {
             return new URL(href, window.location.origin).toString();
         } catch (_error) {
@@ -559,6 +567,7 @@
                             <option value="name">Ordem alfabética</option>
                         </select>
                         <div class="cts-actions">
+                            <button class="cts-btn" data-action="load-supports" style="display:none">Carregar tropas</button>
                             <button class="cts-btn" data-action="export" disabled>Exportar CSV</button>
                             <button class="cts-btn primary" data-action="reload">Atualizar</button>
                         </div>
@@ -580,6 +589,8 @@
                 loadData();
             } else if (button.dataset.action === 'export') {
                 exportCsv();
+            } else if (button.dataset.action === 'load-supports') {
+                loadSupportDetails();
             } else if (button.dataset.view) {
                 state.view = button.dataset.view;
                 overlay.querySelectorAll('[data-view]').forEach(function (tab) {
@@ -592,6 +603,7 @@
                 const typeSelect = overlay.querySelector('[data-filter="type"]');
                 typeSelect.value = 'all';
                 typeSelect.style.display = state.mode === 'support' ? 'none' : '';
+                updateSupportLoadButton();
                 overlay.querySelectorAll('[data-mode]').forEach(function (tab) {
                     tab.classList.toggle('active', tab.dataset.mode === state.mode);
                 });
@@ -620,6 +632,18 @@
         status.classList.toggle('error', Boolean(error));
         status.innerHTML = `<span>${state.running ? '<i class="cts-spinner"></i>' : ''}${escapeHtml(message)}</span><span>${escapeHtml(detail || '')}</span>`;
         progress.style.width = Math.max(0, Math.min(100, Number(percent) || 0)) + '%';
+    }
+
+    function updateSupportLoadButton() {
+        const button = document.querySelector('#' + SCRIPT_ID + ' [data-action="load-supports"]');
+        if (!button) return;
+        button.style.display = state.mode === 'support' ? '' : 'none';
+        button.disabled = state.supportDetailsLoading || state.supportDetailsLoaded;
+        button.textContent = state.supportDetailsLoading
+            ? 'Carregando…'
+            : state.supportDetailsLoaded
+                ? 'Tropas carregadas'
+                : 'Carregar tropas';
     }
 
     function filteredCommands() {
@@ -969,12 +993,57 @@
         window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
     }
 
+    async function loadSupportDetails() {
+        if (state.running || state.supportDetailsLoading || state.supportDetailsLoaded) return;
+        const supports = state.commands.filter(function (command) {
+            return command.kind === 'support' && command.troopStatus === 'pending';
+        });
+        if (!supports.length) {
+            state.supportDetailsLoaded = true;
+            updateSupportLoadButton();
+            renderResults();
+            return;
+        }
+        state.running = true;
+        state.supportDetailsLoading = true;
+        state.cancelled = false;
+        updateSupportLoadButton();
+        for (let index = 0; index < supports.length && !state.cancelled; index += 1) {
+            await enrichSupport(supports[index]);
+            const processed = index + 1;
+            setStatus(
+                'Carregando tropas dos apoios com intervalo seguro…',
+                processed + ' de ' + supports.length,
+                Math.round((processed / supports.length) * 100),
+                false
+            );
+            renderResults();
+            if (processed < supports.length) await requestPause();
+        }
+        state.running = false;
+        state.supportDetailsLoading = false;
+        state.supportDetailsLoaded = !state.cancelled;
+        updateSupportLoadButton();
+        if (document.getElementById(SCRIPT_ID)) {
+            const visible = supports.filter(function (command) { return command.troopStatus === 'available'; }).length;
+            setStatus(
+                state.cancelled ? 'Leitura de tropas interrompida.' : 'Tropas dos apoios carregadas.',
+                formatNumber(visible) + ' de ' + formatNumber(supports.length) + ' comando(s) com quantidades visíveis',
+                100,
+                false
+            );
+            renderResults();
+        }
+    }
+
     async function loadData() {
         if (state.running) return;
         state.running = true;
         state.cancelled = false;
         state.processed = 0;
         state.failures = 0;
+        state.supportDetailsLoaded = false;
+        state.supportDetailsLoading = false;
         state.villages = [];
         state.commands = [];
         renderResults();
@@ -1012,31 +1081,14 @@
                     false
                 );
                 if (state.processed % 4 === 0 || state.processed === links.length) renderResults();
-                await sleep(REQUEST_DELAY_MS);
+                if (state.processed < links.length) await requestPause();
             }
         }
 
         await Promise.all(Array.from({ length: Math.min(REQUEST_CONCURRENCY, links.length) }, worker));
         const supports = state.commands.filter(function (command) { return command.kind === 'support'; });
-        let supportCursor = 0;
-        let supportProcessed = 0;
-        async function supportWorker() {
-            while (!state.cancelled) {
-                const index = supportCursor;
-                supportCursor += 1;
-                if (index >= supports.length) return;
-                await enrichSupport(supports[index]);
-                supportProcessed += 1;
-                const percent = supports.length ? Math.round((supportProcessed / supports.length) * 100) : 100;
-                setStatus('Carregando quantidades dos apoios…', supportProcessed + ' de ' + supports.length, percent, false);
-                if (supportProcessed % 4 === 0 || supportProcessed === supports.length) renderResults();
-                await sleep(REQUEST_DELAY_MS);
-            }
-        }
-        if (supports.length) {
-            await Promise.all(Array.from({ length: Math.min(REQUEST_CONCURRENCY, supports.length) }, supportWorker));
-        }
         state.running = false;
+        updateSupportLoadButton();
         if (!document.getElementById(SCRIPT_ID)) return;
         renderResults();
         if (state.cancelled) {
@@ -1044,7 +1096,7 @@
         } else {
             setStatus(
                 formatNumber(state.commands.filter(function (command) { return command.kind === 'attack'; }).length) + ' ataque(s) · ' + formatNumber(supports.length) + ' apoio(s).',
-                formatNumber(state.villages.length) + ' aldeia(s) analisada(s)' + (state.failures ? ' · ' + state.failures + ' falha(s)' : ''),
+                formatNumber(state.villages.length) + ' aldeia(s) analisada(s)' + (supports.some(function (command) { return command.troopStatus === 'pending'; }) ? ' · tropas sob demanda' : '') + (state.failures ? ' · ' + state.failures + ' falha(s)' : ''),
                 100,
                 state.commands.length === 0
             );
