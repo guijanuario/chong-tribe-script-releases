@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script - Atualizador de Blind no Forum
 // @namespace    chongtribescript.free.release
-// @version      1.0.0
+// @version      1.0.1
 // @description  Soma as respostas do topico de blind, reduz a tabela principal e marca as respostas processadas para exclusao.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*screen=forum*
@@ -408,7 +408,15 @@
                 throw new Error(normalizeText(visibleError.textContent));
             }
 
+            const verificationDocument = await fetchDocument(state.editUrl);
+            const verificationForm = findMessageForm(verificationDocument, state.editUrl);
+            const savedBbcode = verificationForm.textarea.value || verificationForm.textarea.textContent || '';
+            if (normalizeNewlines(savedBbcode) !== normalizeNewlines(state.updatedBbcode)) {
+                throw new Error('o servidor nao confirmou o salvamento; nenhuma resposta sera apagada');
+            }
+
             state.edited = true;
+            updateVisibleRequestTable();
             render('Tabela principal atualizada. Confira os totais abaixo; agora voce pode apagar somente as respostas processadas.', 'ok');
             notify('success', 'Tabela do blind atualizada com sucesso.');
         } catch (error) {
@@ -421,10 +429,47 @@
     }
 
     function appendSubmitter(formData, form) {
-        const submitter = form.querySelector('button[type="submit"], input[type="submit"]');
+        const candidates = Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]'));
+        const submitter = candidates.find((element) => {
+            const label = normalizeText(element.textContent || element.value || element.name || '').toLowerCase();
+            return /salvar|enviar|editar|alterar|confirmar|publicar|^ok$/.test(label)
+                && !/pre.?visual|preview/.test(label);
+        }) || candidates.find((element) => {
+            const label = normalizeText(element.textContent || element.value || element.name || '').toLowerCase();
+            return !/pre.?visual|preview/.test(label);
+        });
         if (submitter?.name && !formData.has(submitter.name)) {
             formData.append(submitter.name, submitter.value || submitter.textContent || 'Salvar');
         }
+    }
+
+    function updateVisibleRequestTable() {
+        const mainPost = findFirstPostContainer() || document;
+        const tables = [];
+        if (mainPost.matches?.('table')) tables.push(mainPost);
+        tables.push(...mainPost.querySelectorAll('table'));
+        const targetTable = tables.find((table) => {
+            const text = normalizeText(table.textContent).toLowerCase();
+            return text.includes('coordenada')
+                && (text.includes('lanca') || text.includes('lança'))
+                && text.includes('espada')
+                && text.includes('spy')
+                && text.includes('cp');
+        });
+        if (!targetTable) return;
+
+        const byNumber = new Map(state.requests.map((request) => [request.number, request]));
+        Array.from(targetTable.rows || []).forEach((row) => {
+            const cells = Array.from(row.cells || []);
+            if (cells.length < 6) return;
+            const numberMatch = normalizeText(cells[0].textContent).match(/^(\d+)$/);
+            if (!numberMatch) return;
+            const request = byNumber.get(Number(numberMatch[1]));
+            if (!request) return;
+            request.remaining.forEach((value, index) => {
+                cells[index + 2].textContent = String(value);
+            });
+        });
     }
 
     function deleteProcessedReplies() {
@@ -478,6 +523,10 @@
 
     function normalizeText(value) {
         return String(value || '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim();
+    }
+
+    function normalizeNewlines(value) {
+        return String(value || '').replace(/\r\n?/g, '\n').trim();
     }
 
     function formatNumber(value) {
