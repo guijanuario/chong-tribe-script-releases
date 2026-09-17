@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script - Atualizador de Blind no Forum
 // @namespace    chongtribescript.free.release
-// @version      1.0.1
+// @version      1.0.2
 // @description  Soma as respostas do topico de blind, reduz a tabela principal e marca as respostas processadas para exclusao.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*screen=forum*
@@ -17,6 +17,7 @@
     const STRICT_RESPONSE = /^(\d+)\/(\d+)\/(\d+)\/(\d+)\/(\d+)$/;
     const ROW_PATTERN = /(\[\*\]\s*(?:\[b\])?)(\d+)((?:\[\/b\])?\s*\[\|\]\s*\[coord\][\s\S]*?\[\/coord\]\s*\[\|\]\s*)(\d+)(\s*\[\|\]\s*)(\d+)(\s*\[\|\]\s*)(\d+)(\s*\[\|\]\s*)(\d+)(\s*\[\/\*\])/gi;
     const UNIT_LABELS = ['Lanca', 'Espada', 'Spy', 'CP'];
+    const PROCESSED_STORAGE_PREFIX = 'cts_forum_blind_processed_v1';
 
     if (document.getElementById(APP_ID)) return;
 
@@ -35,6 +36,7 @@
         replies: [],
         safeReplies: [],
         ignoredReplies: [],
+        alreadyProcessedReplies: [],
         edited: false,
         busy: false
     };
@@ -61,7 +63,10 @@
         }
 
         state.replies = collectReplyPosts();
-        const classified = classifyReplies(state.replies, new Set(state.requests.map((item) => item.number)));
+        const processedIds = loadProcessedIds();
+        state.alreadyProcessedReplies = state.replies.filter((post) => processedIds.has(String(post.id)));
+        const newReplies = state.replies.filter((post) => !processedIds.has(String(post.id)));
+        const classified = classifyReplies(newReplies, new Set(state.requests.map((item) => item.number)));
         state.safeReplies = classified.safe;
         state.ignoredReplies = classified.ignored;
 
@@ -314,26 +319,26 @@
                 <header class="ctsf-head"><div class="ctsf-logo">CTS</div><div class="ctsf-title"><h2 id="ctsf-heading">Atualizador de Blind no Forum</h2><p>Confira os descontos antes de alterar o post principal.</p></div><button class="ctsf-close" type="button" aria-label="Fechar">&times;</button></header>
                 <div class="ctsf-body">
                     ${message ? `<div class="ctsf-alert ${escapeHtml(kind || '')}">${escapeHtml(message)}</div>` : ''}
-                    <div class="ctsf-alert ${state.ignoredReplies.length ? 'warn' : 'ok'}">${state.safeReplies.length} resposta(s) pronta(s) para processar. ${state.ignoredReplies.length} resposta(s) ignorada(s) por seguranca. Nada sera apagado antes da edicao ser concluida.</div>
+                    <div class="ctsf-alert ${state.ignoredReplies.length ? 'warn' : 'ok'}">${state.safeReplies.length} resposta(s) nova(s) pronta(s) para processar. ${state.alreadyProcessedReplies.length} ja contabilizada(s), sem novo desconto. ${state.ignoredReplies.length} ignorada(s) por seguranca.</div>
                     <div class="ctsf-stats">
                         <div class="ctsf-stat"><b>${state.requests.length}</b><span>Pedidos na tabela</span></div>
                         <div class="ctsf-stat"><b>${state.safeReplies.length}</b><span>Postagens validas</span></div>
                         <div class="ctsf-stat"><b>${completed}</b><span>Pedidos completos apos desconto</span></div>
-                        <div class="ctsf-stat"><b>${state.ignoredReplies.length}</b><span>Postagens para revisar</span></div>
+                        <div class="ctsf-stat"><b>${state.alreadyProcessedReplies.length}</b><span>Ja contabilizadas</span></div>
                     </div>
                     <div class="ctsf-table-wrap"><table class="ctsf-table"><thead><tr><th>Pedido</th><th>Coordenada</th>${UNIT_LABELS.map((label) => `<th>${label}<br><small>pedido / recebido / restante</small></th>`).join('')}<th>Colaboradores</th></tr></thead><tbody>
                         ${state.requests.map(renderRequestRow).join('')}
                     </tbody><tfoot><tr><th colspan="2">TOTAL</th>${UNIT_LABELS.map((_, index) => `<th>${formatNumber(totals.requested[index])} / ${formatNumber(totals.received[index])} / ${formatNumber(totals.remaining[index])}</th>`).join('')}<th></th></tr></tfoot></table></div>
                     <div class="ctsf-grid">
                         <section class="ctsf-panel"><h3>Respostas que serao descontadas</h3><div class="ctsf-list">${state.safeReplies.length ? state.safeReplies.map((post) => renderReply(post, false)).join('') : '<div class="ctsf-reply">Nenhuma resposta valida encontrada.</div>'}</div></section>
-                        <section class="ctsf-panel"><h3>Respostas ignoradas</h3><div class="ctsf-list">${state.ignoredReplies.length ? state.ignoredReplies.map((post) => renderReply(post, true)).join('') : '<div class="ctsf-reply">Nenhuma pendencia.</div>'}</div></section>
+                        <section class="ctsf-panel"><h3>Revisao e historico</h3><div class="ctsf-list">${state.ignoredReplies.length ? state.ignoredReplies.map((post) => renderReply(post, true)).join('') : ''}${state.alreadyProcessedReplies.length ? state.alreadyProcessedReplies.map((post) => `<div class="ctsf-reply"><b>${escapeHtml(post.author)}</b><code>Ja contabilizada; pronta para exclusao sem novo desconto.</code></div>`).join('') : ''}${!state.ignoredReplies.length && !state.alreadyProcessedReplies.length ? '<div class="ctsf-reply">Nenhuma pendencia.</div>' : ''}</div></section>
                     </div>
                 </div>
                 <footer class="ctsf-actions">
                     <span class="ctsf-note">A edicao preserva o texto original e altera somente os quatro totais de cada linha da tabela.</span><span class="ctsf-spacer"></span>
                     <button class="ctsf-btn" type="button" data-action="copy">Copiar BBCode atualizado</button>
                     <button class="ctsf-btn ctsf-primary" type="button" data-action="edit" ${state.edited || !state.safeReplies.length ? 'disabled' : ''}>${state.edited ? 'Tabela atualizada' : 'Atualizar tabela'}</button>
-                    <button class="ctsf-btn ctsf-danger" type="button" data-action="delete" ${!state.edited || !state.safeReplies.length ? 'disabled' : ''}>Marcar e apagar processadas</button>
+                    <button class="ctsf-btn ctsf-danger" type="button" data-action="delete" ${(!state.edited || !state.safeReplies.length) && !state.alreadyProcessedReplies.length ? 'disabled' : ''}>Marcar e apagar processadas</button>
                 </footer>
             </section>`;
 
@@ -416,6 +421,7 @@
             }
 
             state.edited = true;
+            saveProcessedIds(state.safeReplies.map((post) => post.id));
             updateVisibleRequestTable();
             render('Tabela principal atualizada. Confira os totais abaixo; agora voce pode apagar somente as respostas processadas.', 'ok');
             notify('success', 'Tabela do blind atualizada com sucesso.');
@@ -473,11 +479,16 @@
     }
 
     function deleteProcessedReplies() {
-        if (!state.edited || state.busy) return;
-        const count = state.safeReplies.length;
+        if (state.busy) return;
+        const postsToDelete = [
+            ...state.alreadyProcessedReplies,
+            ...(state.edited ? state.safeReplies : [])
+        ].filter((post, index, list) => list.findIndex((item) => String(item.id) === String(post.id)) === index);
+        if (!postsToDelete.length) return;
+        const count = postsToDelete.length;
         if (!PAGE_WINDOW.confirm('A tabela ja foi atualizada. Marcar e acionar a exclusao de ' + count + ' postagem(ns) processada(s)?\n\nAs respostas ignoradas permanecerao no topico.')) return;
 
-        const boxes = state.safeReplies.map((post) => post.checkbox).filter((box) => box?.isConnected);
+        const boxes = postsToDelete.map((post) => post.checkbox).filter((box) => box?.isConnected);
         if (boxes.length !== count) {
             render('A pagina mudou e nem todas as respostas ainda estao disponiveis. Recarregue o topico antes de apagar.', 'error');
             return;
@@ -527,6 +538,32 @@
 
     function normalizeNewlines(value) {
         return String(value || '').replace(/\r\n?/g, '\n').trim();
+    }
+
+    function processedStorageKey() {
+        const url = new URL(location.href);
+        const world = location.hostname.split('.')[0] || 'world';
+        return [
+            PROCESSED_STORAGE_PREFIX,
+            world,
+            url.searchParams.get('forum_id') || 'forum',
+            url.searchParams.get('thread_id') || 'thread'
+        ].join(':');
+    }
+
+    function loadProcessedIds() {
+        try {
+            const values = JSON.parse(localStorage.getItem(processedStorageKey()) || '[]');
+            return new Set(Array.isArray(values) ? values.map(String) : []);
+        } catch (_error) {
+            return new Set();
+        }
+    }
+
+    function saveProcessedIds(ids) {
+        const saved = loadProcessedIds();
+        ids.forEach((id) => saved.add(String(id)));
+        localStorage.setItem(processedStorageKey(), JSON.stringify(Array.from(saved).slice(-500)));
     }
 
     function formatNumber(value) {
