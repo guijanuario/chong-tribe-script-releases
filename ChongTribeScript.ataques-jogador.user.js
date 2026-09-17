@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.1.1
-// @description  Analisa os ataques visíveis contra as aldeias de um jogador, com horários, filtros e agrupamento por aldeia ou atacante.
+// @version      1.2.0
+// @description  Analisa ataques e apoios compartilhados nas aldeias de um jogador, com horários, tropas, filtros e agrupamentos.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
 // @run-at       document-idle
@@ -32,6 +32,12 @@
         small: '/graphic/command/attack_small.webp',
         unknown: '/graphic/command/attack.webp',
     };
+    const UNIT_ORDER = ['spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob'];
+    const UNIT_LABELS = {
+        spear: 'Lanceiro', sword: 'Espadachim', axe: 'Bárbaro', archer: 'Arqueiro', spy: 'Espião',
+        light: 'Cavalaria leve', marcher: 'Arqueiro a cavalo', heavy: 'Cavalaria pesada', ram: 'Aríete',
+        catapult: 'Catapulta', knight: 'Paladino', snob: 'Nobre',
+    };
 
     const state = {
         running: false,
@@ -41,6 +47,7 @@
         playerName: '',
         villages: [],
         commands: [],
+        mode: 'attack',
         view: 'village',
         search: '',
         type: 'all',
@@ -111,11 +118,18 @@
         );
     }
 
-    function villageHasAttackMarker(anchor) {
+    function hasSupportMarker(row) {
+        if (!row) return false;
+        return Boolean(row.querySelector(
+            '.command-support,.command-support-ally,img[src*="/command/support"],img[src*="command_support"]'
+        ));
+    }
+
+    function villageHasMovementMarker(anchor) {
         const villagesList = document.getElementById('villages_list');
         let element = anchor;
         while (element && element !== villagesList) {
-            if (element.tagName === 'TR' && hasAttackMarker(element)) return true;
+            if (element.tagName === 'TR' && (hasAttackMarker(element) || hasSupportMarker(element))) return true;
             element = element.parentElement;
         }
         return false;
@@ -125,6 +139,13 @@
         return Array.from(row.querySelectorAll('img')).some(function (image) {
             const source = String(image.getAttribute('src') || '').toLowerCase();
             return /\/command\/attack(?:_|\.|\/)|command_attack/.test(source);
+        });
+    }
+
+    function isSupportCommandRow(row) {
+        return Array.from(row.querySelectorAll('img')).some(function (image) {
+            const source = String(image.getAttribute('src') || '').toLowerCase();
+            return /\/command\/support(?:_|\.|\/)|command_support/.test(source);
         });
     }
 
@@ -143,7 +164,7 @@
         document
             .querySelectorAll('#villages_list a[href*="screen=info_village"][href*="id="]')
             .forEach(function (anchor) {
-                if (!villageHasAttackMarker(anchor)) return;
+                if (!villageHasMovementMarker(anchor)) return;
                 const url = gameUrl(anchor.getAttribute('href'));
                 const id = getVillageId(url);
                 if (url && id && !unique.has(id)) unique.set(id, url);
@@ -168,6 +189,61 @@
             const source = String(image.getAttribute('src') || '').toLowerCase();
             return /snob\.webp|unit_snob|\/snob\./.test(source);
         });
+    }
+
+    function parseTroopNumber(value) {
+        const text = cleanText(value);
+        if (!text || text === '?' || text === '-') return null;
+        const digits = text.replace(/[^\d]/g, '');
+        return digits ? Number(digits) : null;
+    }
+
+    function unitIdFromCell(cell) {
+        const html = String(cell?.innerHTML || '');
+        const patterns = [
+            /unit_([a-z]+)\.(?:png|webp|gif)/i,
+            /unit-([a-z]+)/i,
+            /data-unit=["']([a-z]+)["']/i,
+            /units\/([a-z]+)\.(?:png|webp|gif)/i,
+        ];
+        for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (match && UNIT_ORDER.includes(match[1].toLowerCase())) return match[1].toLowerCase();
+        }
+        return '';
+    }
+
+    function readTroops(root) {
+        for (const table of Array.from(root.querySelectorAll('table'))) {
+            const rows = Array.from(table.rows || []);
+            for (let index = 0; index < rows.length; index += 1) {
+                const headers = Array.from(rows[index].cells || []).map(unitIdFromCell);
+                if (!headers.some(Boolean)) continue;
+                for (let dataIndex = index + 1; dataIndex < Math.min(rows.length, index + 4); dataIndex += 1) {
+                    const cells = Array.from(rows[dataIndex].cells || []);
+                    if (cells.length < headers.length) continue;
+                    const troops = {};
+                    let readable = 0;
+                    headers.forEach(function (unit, cellIndex) {
+                        if (!unit) return;
+                        const number = parseTroopNumber(cells[cellIndex]?.textContent);
+                        if (number != null) {
+                            troops[unit] = number;
+                            readable += 1;
+                        }
+                    });
+                    if (readable) return troops;
+                }
+            }
+        }
+        const troops = {};
+        root.querySelectorAll('[data-unit]').forEach(function (element) {
+            const unit = normalize(element.getAttribute('data-unit')).replace(/[^a-z]/g, '');
+            if (!UNIT_ORDER.includes(unit)) return;
+            const number = parseTroopNumber(element.getAttribute('data-count') || element.textContent);
+            if (number != null) troops[unit] = number;
+        });
+        return troops;
     }
 
     function parseEpoch(value) {
@@ -277,13 +353,16 @@
         documentRoot
             .querySelectorAll('#commands_outgoings tr.command-row')
             .forEach(function (row, rowIndex) {
-                if (!isAttackCommandRow(row)) return;
-                const type = commandType(row);
+                const isAttack = isAttackCommandRow(row);
+                const isSupport = isSupportCommandRow(row);
+                if (!isAttack && !isSupport) return;
+                const type = isAttack ? commandType(row) : 'support';
                 const arrival = extractArrival(row);
                 const attacker = extractAttacker(row);
                 const detailAnchor = row.querySelector(
                     'a[href*="screen=info_command"],a[href*="command_id="]'
                 );
+                const detailUrl = gameUrl(detailAnchor?.getAttribute('href'));
                 commands.push({
                     id: cleanText(row.getAttribute('data-id'))
                         || cleanText(detailAnchor?.getAttribute('href'))
@@ -292,7 +371,11 @@
                     own: attacker.own,
                     name: extractCommandName(row),
                     type: type,
-                    noble: commandHasNoble(row),
+                    kind: isSupport ? 'support' : 'attack',
+                    noble: isAttack && commandHasNoble(row),
+                    detailUrl: detailUrl,
+                    troops: {},
+                    troopStatus: isSupport ? (detailUrl ? 'pending' : 'unavailable') : 'not-applicable',
                     arrival: arrival.label,
                     arrivalTimestamp: arrival.timestamp,
                     countdown: arrival.countdown,
@@ -303,6 +386,21 @@
                 });
             });
         return { village: village, commands: commands };
+    }
+
+    async function enrichSupport(command) {
+        if (!command.detailUrl) {
+            command.troopStatus = 'unavailable';
+            return;
+        }
+        try {
+            const detail = await fetchDocument(command.detailUrl);
+            command.troops = readTroops(detail);
+            command.troopStatus = Object.keys(command.troops).length ? 'available' : 'unavailable';
+        } catch (error) {
+            command.troopStatus = 'error';
+            command.detailError = error.message || 'Falha ao carregar';
+        }
     }
 
     async function fetchDocument(url) {
@@ -361,6 +459,18 @@
             #${SCRIPT_ID} .cts-force-table th{color:#8799b4;font-size:9px;text-transform:uppercase;letter-spacing:.06em}
             #${SCRIPT_ID} .cts-force-table th:first-child,#${SCRIPT_ID} .cts-force-table td:first-child{text-align:left;max-width:260px;overflow:hidden;text-overflow:ellipsis}
             #${SCRIPT_ID} .cts-force-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+            #${SCRIPT_ID} .cts-mode-tabs{display:flex;gap:7px;margin-bottom:11px;padding:5px;border:1px solid var(--line);border-radius:12px;background:#0d1422}
+            #${SCRIPT_ID} .cts-mode{flex:1;height:42px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font-weight:800;cursor:pointer}
+            #${SCRIPT_ID} .cts-mode.active{border-color:#257c73;background:linear-gradient(135deg,#126f64,#0e514c);color:#fff;box-shadow:0 5px 18px rgba(22,198,163,.14)}
+            #${SCRIPT_ID} .cts-unit-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:7px;padding:0 14px 13px}
+            #${SCRIPT_ID} .cts-unit-total{display:flex;align-items:center;gap:8px;padding:9px;border:1px solid #33445e;border-radius:9px;background:#101827}
+            #${SCRIPT_ID} .cts-unit-total img{width:24px;height:24px}
+            #${SCRIPT_ID} .cts-unit-total strong{display:block;color:#fff;font-size:16px}
+            #${SCRIPT_ID} .cts-unit-total span{display:block;color:#8fa0b8;font-size:9px;margin-top:2px}
+            #${SCRIPT_ID} .cts-troops{display:flex;flex-wrap:wrap;gap:5px}
+            #${SCRIPT_ID} .cts-troop{display:inline-flex;align-items:center;gap:3px;padding:3px 5px;border:1px solid #3a4b65;border-radius:6px;background:#101827;color:#e4ebf6;font-size:10px}
+            #${SCRIPT_ID} .cts-troop img{width:15px;height:15px}
+            #${SCRIPT_ID} .cts-unavailable{color:#f1a3a3;font-size:10px}
             #${SCRIPT_ID} .cts-toolbar{display:grid;grid-template-columns:auto minmax(190px,1fr) 170px 180px auto;gap:8px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel);position:sticky;top:0;z-index:4}
             #${SCRIPT_ID} .cts-tabs{display:flex;padding:3px;border-radius:9px;background:#0d1422}
             #${SCRIPT_ID} .cts-tab{border:0;background:transparent;color:var(--muted);padding:8px 11px;border-radius:7px;cursor:pointer;white-space:nowrap}
@@ -412,8 +522,8 @@
                     <div class="cts-brand">
                         <div class="cts-logo">CTS</div>
                         <div>
-                            <h2>Ataques recebidos — ${escapeHtml(state.playerName)}</h2>
-                            <div class="cts-subtitle">Horários e origem dos ataques visíveis nas aldeias deste jogador</div>
+                            <h2>Movimentações compartilhadas — ${escapeHtml(state.playerName)}</h2>
+                            <div class="cts-subtitle">Ataques e apoios chegando às aldeias deste jogador</div>
                         </div>
                     </div>
                     <button class="cts-close" data-action="close" title="Fechar">×</button>
@@ -423,6 +533,10 @@
                     <div class="cts-progress"><span id="${SCRIPT_ID}-progress"></span></div>
                 </div>
                 <main class="cts-body">
+                    <div class="cts-mode-tabs">
+                        <button class="cts-mode active" data-mode="attack">⚔ Ataques recebidos</button>
+                        <button class="cts-mode" data-mode="support">🛡 Apoios chegando</button>
+                    </div>
                     <div class="cts-stats" id="${SCRIPT_ID}-stats"></div>
                     <div id="${SCRIPT_ID}-strength"></div>
                     <div class="cts-toolbar">
@@ -457,7 +571,7 @@
         document.body.appendChild(overlay);
 
         overlay.addEventListener('click', function (event) {
-            const button = event.target.closest('[data-action],[data-view]');
+            const button = event.target.closest('[data-action],[data-view],[data-mode]');
             if (!button) return;
             if (button.dataset.action === 'close') {
                 state.cancelled = true;
@@ -470,6 +584,16 @@
                 state.view = button.dataset.view;
                 overlay.querySelectorAll('[data-view]').forEach(function (tab) {
                     tab.classList.toggle('active', tab.dataset.view === state.view);
+                });
+                renderResults();
+            } else if (button.dataset.mode) {
+                state.mode = button.dataset.mode;
+                state.type = 'all';
+                const typeSelect = overlay.querySelector('[data-filter="type"]');
+                typeSelect.value = 'all';
+                typeSelect.style.display = state.mode === 'support' ? 'none' : '';
+                overlay.querySelectorAll('[data-mode]').forEach(function (tab) {
+                    tab.classList.toggle('active', tab.dataset.mode === state.mode);
                 });
                 renderResults();
             }
@@ -501,8 +625,9 @@
     function filteredCommands() {
         const query = normalize(state.search);
         return state.commands.filter(function (command) {
-            if (state.type === 'noble' && !command.noble) return false;
-            if (state.type !== 'all' && state.type !== 'noble' && command.type !== state.type) return false;
+            if (command.kind !== state.mode) return false;
+            if (state.mode === 'attack' && state.type === 'noble' && !command.noble) return false;
+            if (state.mode === 'attack' && state.type !== 'all' && state.type !== 'noble' && command.type !== state.type) return false;
             if (!query) return true;
             return normalize([
                 command.player,
@@ -689,17 +814,111 @@
         `;
     }
 
+    function sumTroops(commands) {
+        const totals = Object.fromEntries(UNIT_ORDER.map(function (unit) { return [unit, 0]; }));
+        commands.forEach(function (command) {
+            UNIT_ORDER.forEach(function (unit) {
+                totals[unit] += Number(command.troops?.[unit]) || 0;
+            });
+        });
+        return totals;
+    }
+
+    function troopsHtml(command) {
+        if (command.troopStatus !== 'available') {
+            const label = command.troopStatus === 'pending' ? 'Carregando tropas…' : 'Quantidade não compartilhada';
+            return `<span class="cts-unavailable">${label}</span>`;
+        }
+        const items = UNIT_ORDER.filter(function (unit) {
+            return Number(command.troops?.[unit]) > 0;
+        }).map(function (unit) {
+            return `<span class="cts-troop" title="${escapeHtml(UNIT_LABELS[unit])}"><img src="/graphic/unit/unit_${unit}.png" alt="">${formatNumber(command.troops[unit])}</span>`;
+        });
+        return items.length ? `<div class="cts-troops">${items.join('')}</div>` : '<span class="cts-unavailable">Apoio sem tropas reconhecidas</span>';
+    }
+
+    function renderSupportStats(commands) {
+        const element = document.getElementById(SCRIPT_ID + '-stats');
+        if (!element) return;
+        const villages = new Set(commands.map(function (command) { return command.villageId; })).size;
+        const players = new Set(commands.map(function (command) { return command.player; })).size;
+        const visible = commands.filter(function (command) { return command.troopStatus === 'available'; }).length;
+        const troopTotal = Object.values(sumTroops(commands)).reduce(function (sum, value) { return sum + value; }, 0);
+        const nextTimestamp = soonestTimestamp(commands);
+        const next = nextTimestamp === Number.MAX_SAFE_INTEGER ? '—' : formatArrivalTimestamp(nextTimestamp);
+        element.innerHTML = `
+            <div class="cts-stat"><strong>${formatNumber(villages)}</strong><span>Aldeias recebendo</span></div>
+            <div class="cts-stat"><strong>${formatNumber(commands.length)}</strong><span>Apoios chegando</span></div>
+            <div class="cts-stat"><strong>${formatNumber(players)}</strong><span>Jogadores enviando</span></div>
+            <div class="cts-stat"><strong>${formatNumber(visible)}</strong><span>Com tropas visíveis</span></div>
+            <div class="cts-stat"><strong>${formatNumber(troopTotal)}</strong><span>Unidades identificadas</span></div>
+            <div class="cts-stat"><strong style="font-size:${next === '—' ? '22px' : '15px'}">${escapeHtml(next)}</strong><span>Próxima chegada</span></div>
+        `;
+    }
+
+    function renderSupportOverview(commands) {
+        const element = document.getElementById(SCRIPT_ID + '-strength');
+        if (!element) return;
+        const totals = sumTroops(commands);
+        const units = UNIT_ORDER.filter(function (unit) { return totals[unit] > 0; });
+        const groups = sortGroups(groupCommands(commands, function (command) { return command.player; })).slice(0, 10);
+        const unitCards = units.map(function (unit) {
+            return `<div class="cts-unit-total"><img src="/graphic/unit/unit_${unit}.png" alt=""><div><strong>${formatNumber(totals[unit])}</strong><span>${escapeHtml(UNIT_LABELS[unit])}</span></div></div>`;
+        }).join('');
+        const rows = groups.map(function (entry) {
+            const playerCommands = entry[1];
+            const playerTroops = sumTroops(playerCommands);
+            const total = Object.values(playerTroops).reduce(function (sum, value) { return sum + value; }, 0);
+            const villages = new Set(playerCommands.map(function (command) { return command.villageId; })).size;
+            return `<tr><td>${escapeHtml(entry[0])}${playerCommands.some(function (command) { return command.own; }) ? '<span class="cts-own">Você</span>' : ''}</td><td>${formatNumber(playerCommands.length)}</td><td>${formatNumber(villages)}</td><td><strong>${formatNumber(total)}</strong></td></tr>`;
+        }).join('');
+        element.innerHTML = `
+            <section class="cts-strength">
+                <div class="cts-strength-head"><div><div class="cts-strength-title">Panorama dos apoios chegando</div><div class="cts-strength-note">Soma somente tropas que estão compartilhadas e visíveis nos detalhes dos comandos</div></div></div>
+                ${unitCards ? `<div class="cts-unit-totals">${unitCards}</div>` : '<div class="cts-empty" style="margin:0 14px 13px;padding:20px">Nenhuma quantidade de tropa compartilhada foi reconhecida.</div>'}
+                ${rows ? `<div class="cts-force-table-wrap"><table class="cts-force-table"><thead><tr><th>Jogador</th><th>Apoios</th><th>Destinos</th><th>Unidades</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+            </section>
+        `;
+    }
+
+    function supportRows(commands, fourthColumn) {
+        return commands.slice().sort(function (a, b) {
+            return (a.arrivalTimestamp || Number.MAX_SAFE_INTEGER) - (b.arrivalTimestamp || Number.MAX_SAFE_INTEGER);
+        }).map(function (command) {
+            const fourth = fourthColumn === 'village'
+                ? `${escapeHtml(command.villageName)}${command.villageCoordinate ? ' · ' + escapeHtml(command.villageCoordinate) : ''}`
+                : escapeHtml(command.name);
+            return `<div class="cts-command-grid"><div class="cts-player">${escapeHtml(command.player)}${command.own ? '<span class="cts-own">Seu apoio</span>' : ''}</div><div><span class="cts-arrival">${escapeHtml(command.arrival)}</span>${command.countdown && command.countdown !== command.arrival ? `<span class="cts-countdown">Chega em ${escapeHtml(command.countdown)}</span>` : ''}</div><div>${troopsHtml(command)}</div><div>${fourth}</div></div>`;
+        }).join('');
+    }
+
+    function renderSupportGroup(key, commands) {
+        const first = commands[0];
+        const byPlayer = state.view === 'player';
+        const title = byPlayer ? key : first.villageName;
+        const meta = byPlayer
+            ? `${formatNumber(new Set(commands.map(function (command) { return command.villageId; })).size)} aldeia(s) de destino`
+            : `${escapeHtml(first.villageCoordinate || 'Coordenada não localizada')} · ${formatNumber(new Set(commands.map(function (command) { return command.player; })).size)} jogador(es) enviando`;
+        return `<section class="cts-group"><div class="cts-group-head"><div><div class="cts-group-title">${escapeHtml(title)}</div><div class="cts-group-meta">${meta}</div></div><div class="cts-badges"><span class="cts-badge">Apoios: <strong>${formatNumber(commands.length)}</strong></span><span class="cts-badge">Tropas visíveis: <strong>${formatNumber(commands.filter(function (command) { return command.troopStatus === 'available'; }).length)}</strong></span></div></div><div class="cts-command-grid header"><div>Jogador</div><div>Horário de chegada</div><div>Tropas enviadas</div><div>${byPlayer ? 'Aldeia de destino' : 'Nome do comando'}</div></div>${supportRows(commands, byPlayer ? 'village' : 'command')}</section>`;
+    }
+
     function renderResults() {
         const results = document.getElementById(SCRIPT_ID + '-results');
         if (!results) return;
         const commands = filteredCommands();
-        renderStats(commands);
-        renderStrengthOverview(commands);
+        if (state.mode === 'support') {
+            renderSupportStats(commands);
+            renderSupportOverview(commands);
+        } else {
+            renderStats(commands);
+            renderStrengthOverview(commands);
+        }
         const exportButton = document.querySelector('#' + SCRIPT_ID + ' [data-action="export"]');
         if (exportButton) exportButton.disabled = commands.length === 0;
 
         if (!commands.length) {
-            results.innerHTML = `<div class="cts-empty"><strong>Nenhum ataque encontrado.</strong><br><br>Revise os filtros ou confirme se os comandos estão compartilhados e visíveis para sua conta.</div>`;
+            const emptyLabel = state.mode === 'support' ? 'Nenhum apoio chegando foi encontrado.' : 'Nenhum ataque encontrado.';
+            results.innerHTML = `<div class="cts-empty"><strong>${emptyLabel}</strong><br><br>Confirme se os comandos estão compartilhados e visíveis para sua conta.</div>`;
             return;
         }
 
@@ -708,6 +927,7 @@
             : groupCommands(commands, function (command) { return command.villageId || command.villageCoordinate; });
         sortGroups(groups);
         results.innerHTML = groups.map(function (entry) {
+            if (state.mode === 'support') return renderSupportGroup(entry[0], entry[1]);
             return state.view === 'player'
                 ? renderPlayerGroup(entry[0], entry[1])
                 : renderVillageGroup(entry[0], entry[1]);
@@ -719,8 +939,16 @@
     }
 
     function exportCsv() {
-        const header = ['Jogador', 'Seu comando', 'Aldeia atacada', 'Coordenada', 'Tipo', 'Nome do comando', 'Chegada', 'Contagem regressiva'];
+        const supportMode = state.mode === 'support';
+        const header = supportMode
+            ? ['Jogador', 'Seu apoio', 'Aldeia de destino', 'Coordenada', 'Nome do comando', 'Chegada', 'Contagem regressiva'].concat(UNIT_ORDER.map(function (unit) { return UNIT_LABELS[unit]; })).concat(['Status das tropas'])
+            : ['Jogador', 'Seu comando', 'Aldeia atacada', 'Coordenada', 'Tipo', 'Nome do comando', 'Chegada', 'Contagem regressiva'];
         const rows = [header].concat(filteredCommands().map(function (command) {
+            if (supportMode) {
+                return [command.player, command.own ? 'Sim' : 'Não', command.villageName, command.villageCoordinate, command.name, command.arrival, command.countdown]
+                    .concat(UNIT_ORDER.map(function (unit) { return command.troops?.[unit] ?? ''; }))
+                    .concat([command.troopStatus === 'available' ? 'Visível' : 'Não compartilhada']);
+            }
             return [
                 command.player,
                 command.own ? 'Sim' : 'Não',
@@ -736,7 +964,7 @@
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = 'ataques-' + String(window.game_data?.world || 'mundo') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+        link.download = (supportMode ? 'apoios-chegando-' : 'ataques-') + String(window.game_data?.world || 'mundo') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
         link.click();
         window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
     }
@@ -755,11 +983,11 @@
         const links = collectVillageLinks();
         if (!links.length) {
             state.running = false;
-            setStatus('Nenhuma aldeia com ataques visíveis foi encontrada.', 'Verifique o compartilhamento dos comandos.', 100, true);
+            setStatus('Nenhuma aldeia com movimentações visíveis foi encontrada.', 'Verifique o compartilhamento dos comandos.', 100, true);
             return;
         }
 
-        setStatus('Lendo aldeias atacadas…', '0 de ' + links.length, 0, false);
+        setStatus('Lendo ataques e apoios…', '0 de ' + links.length, 0, false);
         let cursor = 0;
         async function worker() {
             while (!state.cancelled) {
@@ -778,7 +1006,7 @@
                 state.processed += 1;
                 const percent = Math.round((state.processed / links.length) * 100);
                 setStatus(
-                    'Lendo aldeias atacadas…',
+                    'Lendo ataques e apoios…',
                     state.processed + ' de ' + links.length + (state.failures ? ' · ' + state.failures + ' falha(s)' : ''),
                     percent,
                     false
@@ -789,6 +1017,25 @@
         }
 
         await Promise.all(Array.from({ length: Math.min(REQUEST_CONCURRENCY, links.length) }, worker));
+        const supports = state.commands.filter(function (command) { return command.kind === 'support'; });
+        let supportCursor = 0;
+        let supportProcessed = 0;
+        async function supportWorker() {
+            while (!state.cancelled) {
+                const index = supportCursor;
+                supportCursor += 1;
+                if (index >= supports.length) return;
+                await enrichSupport(supports[index]);
+                supportProcessed += 1;
+                const percent = supports.length ? Math.round((supportProcessed / supports.length) * 100) : 100;
+                setStatus('Carregando quantidades dos apoios…', supportProcessed + ' de ' + supports.length, percent, false);
+                if (supportProcessed % 4 === 0 || supportProcessed === supports.length) renderResults();
+                await sleep(REQUEST_DELAY_MS);
+            }
+        }
+        if (supports.length) {
+            await Promise.all(Array.from({ length: Math.min(REQUEST_CONCURRENCY, supports.length) }, supportWorker));
+        }
         state.running = false;
         if (!document.getElementById(SCRIPT_ID)) return;
         renderResults();
@@ -796,8 +1043,8 @@
             setStatus('Leitura interrompida.', 'Os dados já obtidos foram mantidos.', 100, false);
         } else {
             setStatus(
-                formatNumber(state.commands.length) + ' ataque(s) carregado(s).',
-                formatNumber(state.villages.length) + ' aldeia(s)' + (state.failures ? ' · ' + state.failures + ' falha(s)' : ''),
+                formatNumber(state.commands.filter(function (command) { return command.kind === 'attack'; }).length) + ' ataque(s) · ' + formatNumber(supports.length) + ' apoio(s).',
+                formatNumber(state.villages.length) + ' aldeia(s) analisada(s)' + (state.failures ? ' · ' + state.failures + ' falha(s)' : ''),
                 100,
                 state.commands.length === 0
             );
