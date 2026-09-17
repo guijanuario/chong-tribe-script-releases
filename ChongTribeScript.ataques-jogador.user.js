@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.0.2
+// @version      1.1.0
 // @description  Analisa os ataques visíveis contra as aldeias de um jogador, com horários, filtros e agrupamento por aldeia ou atacante.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -157,11 +157,17 @@
                 return String(image.getAttribute('src') || '').toLowerCase();
             })
             .join(' ');
-        if (/snob\.webp|unit_snob|\/snob\./.test(sources)) return 'noble';
         if (/attack_large/.test(sources)) return 'large';
         if (/attack_medium/.test(sources)) return 'medium';
         if (/attack_small/.test(sources)) return 'small';
         return 'unknown';
+    }
+
+    function commandHasNoble(row) {
+        return Array.from(row.querySelectorAll('img')).some(function (image) {
+            const source = String(image.getAttribute('src') || '').toLowerCase();
+            return /snob\.webp|unit_snob|\/snob\./.test(source);
+        });
     }
 
     function parseEpoch(value) {
@@ -277,6 +283,7 @@
                     player: extractAttacker(row),
                     name: extractCommandName(row),
                     type: type,
+                    noble: commandHasNoble(row),
                     arrival: arrival.label,
                     arrivalTimestamp: arrival.timestamp,
                     countdown: arrival.countdown,
@@ -325,6 +332,26 @@
             #${SCRIPT_ID} .cts-stat{padding:12px 13px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(150deg,var(--panel2),#141d2d)}
             #${SCRIPT_ID} .cts-stat strong{display:block;color:#fff;font-size:22px;line-height:1.1;margin-bottom:4px}
             #${SCRIPT_ID} .cts-stat span{color:var(--muted);font-size:11px}
+            #${SCRIPT_ID} .cts-strength{margin-bottom:13px;border:1px solid var(--line);border-radius:13px;background:linear-gradient(135deg,#172033,#121a2a);overflow:hidden}
+            #${SCRIPT_ID} .cts-strength-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:12px 14px 9px}
+            #${SCRIPT_ID} .cts-strength-title{font-size:15px;font-weight:800;color:#fff}
+            #${SCRIPT_ID} .cts-strength-note{color:var(--muted);font-size:10px;margin-top:3px}
+            #${SCRIPT_ID} .cts-axes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 14px 12px}
+            #${SCRIPT_ID} .cts-axe{position:relative;overflow:hidden;padding:11px 12px;border:1px solid #3b4b65;border-radius:10px;background:#101827}
+            #${SCRIPT_ID} .cts-axe:before{content:'';position:absolute;inset:0 auto 0 0;width:4px;background:var(--axe-color)}
+            #${SCRIPT_ID} .cts-axe-main{display:flex;align-items:center;gap:9px}
+            #${SCRIPT_ID} .cts-axe img{width:25px;height:25px;image-rendering:auto}
+            #${SCRIPT_ID} .cts-axe strong{font-size:22px;color:#fff;line-height:1}
+            #${SCRIPT_ID} .cts-axe-label{display:block;color:#dbe5f4;font-weight:700;font-size:11px;margin-top:3px}
+            #${SCRIPT_ID} .cts-axe-meta{color:#8fa0b8;font-size:10px;margin-top:5px}
+            #${SCRIPT_ID} .cts-force-bar{display:flex;height:10px;margin:0 14px 12px;border-radius:99px;overflow:hidden;background:#26344b}
+            #${SCRIPT_ID} .cts-force-bar span{display:block;height:100%;min-width:0;transition:width .25s ease}
+            #${SCRIPT_ID} .cts-force-table-wrap{padding:0 14px 13px;overflow:auto}
+            #${SCRIPT_ID} .cts-force-table{width:100%;border-collapse:collapse;font-size:11px}
+            #${SCRIPT_ID} .cts-force-table th,#${SCRIPT_ID} .cts-force-table td{padding:6px 8px;border-top:1px solid #2c3b53;text-align:right;white-space:nowrap}
+            #${SCRIPT_ID} .cts-force-table th{color:#8799b4;font-size:9px;text-transform:uppercase;letter-spacing:.06em}
+            #${SCRIPT_ID} .cts-force-table th:first-child,#${SCRIPT_ID} .cts-force-table td:first-child{text-align:left;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+            #${SCRIPT_ID} .cts-force-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
             #${SCRIPT_ID} .cts-toolbar{display:grid;grid-template-columns:auto minmax(190px,1fr) 170px 180px auto;gap:8px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel);position:sticky;top:0;z-index:4}
             #${SCRIPT_ID} .cts-tabs{display:flex;padding:3px;border-radius:9px;background:#0d1422}
             #${SCRIPT_ID} .cts-tab{border:0;background:transparent;color:var(--muted);padding:8px 11px;border-radius:7px;cursor:pointer;white-space:nowrap}
@@ -360,7 +387,7 @@
             #${SCRIPT_ID} .cts-spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-2px;margin-right:6px;animation:cts-spin .7s linear infinite}
             @keyframes cts-spin{to{transform:rotate(360deg)}}
             @media(max-width:850px){#${SCRIPT_ID}{height:96vh}#${SCRIPT_ID} .cts-stats{grid-template-columns:repeat(2,1fr)}#${SCRIPT_ID} .cts-toolbar{grid-template-columns:1fr 1fr}#${SCRIPT_ID} .cts-tabs{grid-column:1/-1}#${SCRIPT_ID} .cts-actions{grid-column:1/-1}#${SCRIPT_ID} .cts-command-grid{grid-template-columns:1fr 1fr}#${SCRIPT_ID} .cts-command-grid.header{display:none}}
-            @media(max-width:520px){#${SCRIPT_ID}-overlay{padding:0}#${SCRIPT_ID}{width:100vw;height:100vh;border-radius:0}#${SCRIPT_ID} .cts-head,#${SCRIPT_ID} .cts-body,#${SCRIPT_ID} .cts-status-wrap{padding-left:12px;padding-right:12px}#${SCRIPT_ID} .cts-stats{grid-template-columns:1fr 1fr}#${SCRIPT_ID} .cts-toolbar{grid-template-columns:1fr}#${SCRIPT_ID} .cts-tabs,#${SCRIPT_ID} .cts-actions{grid-column:auto}#${SCRIPT_ID} .cts-command-grid{grid-template-columns:1fr}#${SCRIPT_ID} .cts-group-head{display:block}#${SCRIPT_ID} .cts-badges{justify-content:flex-start;margin-top:8px}}
+            @media(max-width:520px){#${SCRIPT_ID}-overlay{padding:0}#${SCRIPT_ID}{width:100vw;height:100vh;border-radius:0}#${SCRIPT_ID} .cts-head,#${SCRIPT_ID} .cts-body,#${SCRIPT_ID} .cts-status-wrap{padding-left:12px;padding-right:12px}#${SCRIPT_ID} .cts-stats{grid-template-columns:1fr 1fr}#${SCRIPT_ID} .cts-axes{grid-template-columns:1fr}#${SCRIPT_ID} .cts-toolbar{grid-template-columns:1fr}#${SCRIPT_ID} .cts-tabs,#${SCRIPT_ID} .cts-actions{grid-column:auto}#${SCRIPT_ID} .cts-command-grid{grid-template-columns:1fr}#${SCRIPT_ID} .cts-group-head{display:block}#${SCRIPT_ID} .cts-badges{justify-content:flex-start;margin-top:8px}}
         `;
         document.head.appendChild(style);
     }
@@ -387,6 +414,7 @@
                 </div>
                 <main class="cts-body">
                     <div class="cts-stats" id="${SCRIPT_ID}-stats"></div>
+                    <div id="${SCRIPT_ID}-strength"></div>
                     <div class="cts-toolbar">
                         <div class="cts-tabs">
                             <button class="cts-tab active" data-view="village">Por aldeia</button>
@@ -463,7 +491,8 @@
     function filteredCommands() {
         const query = normalize(state.search);
         return state.commands.filter(function (command) {
-            if (state.type !== 'all' && command.type !== state.type) return false;
+            if (state.type === 'noble' && !command.noble) return false;
+            if (state.type !== 'all' && state.type !== 'noble' && command.type !== state.type) return false;
             if (!query) return true;
             return normalize([
                 command.player,
@@ -501,6 +530,9 @@
     }
 
     function countByType(commands, type) {
+        if (type === 'noble') {
+            return commands.filter(function (command) { return command.noble; }).length;
+        }
         return commands.filter(function (command) { return command.type === type; }).length;
     }
 
@@ -521,7 +553,7 @@
             return `
                 <div class="cts-command-grid">
                     <div class="cts-player">${escapeHtml(command.player)}</div>
-                    <div class="cts-type"><img src="${TYPE_ICONS[command.type]}" alt="">${escapeHtml(TYPE_LABELS[command.type])}</div>
+                    <div class="cts-type"><img src="${TYPE_ICONS[command.type]}" alt="">${escapeHtml(TYPE_LABELS[command.type])}${command.noble ? ` <span class="cts-badge"><img src="${TYPE_ICONS.noble}" alt="">Nobre</span>` : ''}</div>
                     <div><span class="cts-arrival">${escapeHtml(command.arrival)}</span>${command.countdown && command.countdown !== command.arrival ? `<span class="cts-countdown">Chega em ${escapeHtml(command.countdown)}</span>` : ''}</div>
                     <div>${fourth}</div>
                 </div>
@@ -586,11 +618,71 @@
         `;
     }
 
+    function renderStrengthOverview(commands) {
+        const element = document.getElementById(SCRIPT_ID + '-strength');
+        if (!element) return;
+        const colors = { large: '#ef4444', medium: '#a66b3f', small: '#39b86b' };
+        const types = [
+            { key: 'large', label: 'Machados vermelhos', hint: 'Ataques grandes' },
+            { key: 'medium', label: 'Machados marrons', hint: 'Ataques médios' },
+            { key: 'small', label: 'Machados verdes', hint: 'Ataques pequenos' },
+        ];
+        const counts = Object.fromEntries(types.map(function (item) {
+            return [item.key, countByType(commands, item.key)];
+        }));
+        const classifiedTotal = counts.large + counts.medium + counts.small;
+        const playersByType = Object.fromEntries(types.map(function (item) {
+            return [item.key, new Set(commands.filter(function (command) {
+                return command.type === item.key;
+            }).map(function (command) { return command.player; })).size];
+        }));
+        const groups = sortGroups(groupCommands(commands, function (command) { return command.player; })).slice(0, 8);
+        const cards = types.map(function (item) {
+            const percent = classifiedTotal ? Math.round((counts[item.key] / classifiedTotal) * 100) : 0;
+            return `
+                <div class="cts-axe" style="--axe-color:${colors[item.key]}">
+                    <div class="cts-axe-main"><img src="${TYPE_ICONS[item.key]}" alt=""><strong>${formatNumber(counts[item.key])}</strong></div>
+                    <span class="cts-axe-label">${item.label}</span>
+                    <div class="cts-axe-meta">${item.hint} · ${percent}% · ${formatNumber(playersByType[item.key])} jogador(es)</div>
+                </div>
+            `;
+        }).join('');
+        const bar = types.map(function (item) {
+            const percent = classifiedTotal ? (counts[item.key] / classifiedTotal) * 100 : 0;
+            return `<span title="${item.label}: ${formatNumber(counts[item.key])}" style="width:${percent}%;background:${colors[item.key]}"></span>`;
+        }).join('');
+        const rows = groups.map(function (entry) {
+            const playerCommands = entry[1];
+            return `
+                <tr>
+                    <td>${escapeHtml(entry[0])}</td>
+                    <td><span class="cts-force-dot" style="background:${colors.large}"></span>${formatNumber(countByType(playerCommands, 'large'))}</td>
+                    <td><span class="cts-force-dot" style="background:${colors.medium}"></span>${formatNumber(countByType(playerCommands, 'medium'))}</td>
+                    <td><span class="cts-force-dot" style="background:${colors.small}"></span>${formatNumber(countByType(playerCommands, 'small'))}</td>
+                    <td>${formatNumber(countByType(playerCommands, 'noble'))}</td>
+                    <td><strong>${formatNumber(playerCommands.length)}</strong></td>
+                </tr>
+            `;
+        }).join('');
+        element.innerHTML = `
+            <section class="cts-strength">
+                <div class="cts-strength-head">
+                    <div><div class="cts-strength-title">Panorama da força ofensiva</div><div class="cts-strength-note">Distribuição dos indicadores de tamanho mostrados pelo Tribal Wars${state.search || state.type !== 'all' ? ' · considerando os filtros ativos' : ''}</div></div>
+                    <span class="cts-badge">Classificados: <strong>${formatNumber(classifiedTotal)}</strong></span>
+                </div>
+                <div class="cts-axes">${cards}</div>
+                <div class="cts-force-bar">${bar}</div>
+                ${rows ? `<div class="cts-force-table-wrap"><table class="cts-force-table"><thead><tr><th>Jogador</th><th>Vermelhos</th><th>Marrons</th><th>Verdes</th><th>Nobres</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+            </section>
+        `;
+    }
+
     function renderResults() {
         const results = document.getElementById(SCRIPT_ID + '-results');
         if (!results) return;
         const commands = filteredCommands();
         renderStats(commands);
+        renderStrengthOverview(commands);
         const exportButton = document.querySelector('#' + SCRIPT_ID + ' [data-action="export"]');
         if (exportButton) exportButton.disabled = commands.length === 0;
 
@@ -621,7 +713,7 @@
                 command.player,
                 command.villageName,
                 command.villageCoordinate,
-                TYPE_LABELS[command.type],
+                TYPE_LABELS[command.type] + (command.noble ? ' + possível nobre' : ''),
                 command.name,
                 command.arrival,
                 command.countdown,
