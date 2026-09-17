@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script - Atualizador de Blind no Forum
 // @namespace    chongtribescript.free.release
-// @version      1.0.2
+// @version      1.0.3
 // @description  Soma as respostas do topico de blind, reduz a tabela principal e marca as respostas processadas para exclusao.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*screen=forum*
@@ -337,6 +337,7 @@
                 <footer class="ctsf-actions">
                     <span class="ctsf-note">A edicao preserva o texto original e altera somente os quatro totais de cada linha da tabela.</span><span class="ctsf-spacer"></span>
                     <button class="ctsf-btn" type="button" data-action="copy">Copiar BBCode atualizado</button>
+                    ${state.safeReplies.length && !state.edited ? '<button class="ctsf-btn" type="button" data-action="recover">Ja foi descontado — so apagar</button>' : ''}
                     <button class="ctsf-btn ctsf-primary" type="button" data-action="edit" ${state.edited || !state.safeReplies.length ? 'disabled' : ''}>${state.edited ? 'Tabela atualizada' : 'Atualizar tabela'}</button>
                     <button class="ctsf-btn ctsf-danger" type="button" data-action="delete" ${(!state.edited || !state.safeReplies.length) && !state.alreadyProcessedReplies.length ? 'disabled' : ''}>Marcar e apagar processadas</button>
                 </footer>
@@ -344,6 +345,7 @@
 
         overlay.querySelector('.ctsf-close').addEventListener('click', () => overlay.remove());
         overlay.querySelector('[data-action="copy"]').addEventListener('click', copyUpdatedBbcode);
+        overlay.querySelector('[data-action="recover"]')?.addEventListener('click', recoverPreviouslySavedEdit);
         overlay.querySelector('[data-action="edit"]').addEventListener('click', updateMainPost);
         overlay.querySelector('[data-action="delete"]').addEventListener('click', deleteProcessedReplies);
     }
@@ -447,6 +449,22 @@
         if (submitter?.name && !formData.has(submitter.name)) {
             formData.append(submitter.name, submitter.value || submitter.textContent || 'Salvar');
         }
+    }
+
+    function recoverPreviouslySavedEdit() {
+        if (!state.safeReplies.length || state.edited || state.busy) return;
+        const confirmed = PAGE_WINDOW.confirm(
+            'Use esta opcao SOMENTE se voce recarregou o topico e a tabela ja mostra os valores reduzidos.\n\n'
+            + 'As ' + state.safeReplies.length + ' resposta(s) serao registradas como ja contabilizadas e poderao ser apagadas sem novo desconto. Continuar?'
+        );
+        if (!confirmed) return;
+
+        saveProcessedIds(state.safeReplies.map((post) => post.id));
+        state.alreadyProcessedReplies.push(...state.safeReplies);
+        state.safeReplies = [];
+        state.requests = parseRequestRows(state.originalBbcode);
+        state.updatedBbcode = state.originalBbcode;
+        render('Recuperacao concluida: nenhum valor foi descontado novamente. Agora use Marcar e apagar processadas.', 'ok');
     }
 
     function updateVisibleRequestTable() {
