@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.1.0
+// @version      1.1.1
 // @description  Analisa os ataques visíveis contra as aldeias de um jogador, com horários, filtros e agrupamento por aldeia ou atacante.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -227,9 +227,15 @@
         };
     }
 
+    function loggedPlayerName() {
+        return cleanText(window.game_data?.player?.name) || 'Você';
+    }
+
     function extractAttacker(row) {
         const playerAnchor = row.querySelector('a[href*="screen=info_player"]');
-        if (playerAnchor) return cleanText(playerAnchor.textContent) || 'Não identificado';
+        if (playerAnchor) {
+            return { name: cleanText(playerAnchor.textContent) || 'Não identificado', own: false };
+        }
 
         const labelElement = row.querySelector(
             '.quickedit-label,.command-label,.command-name,[data-command-name]'
@@ -237,9 +243,10 @@
         const label = cleanText(
             labelElement?.getAttribute('data-command-name') || labelElement?.textContent
         );
-        if (!label) return 'Não identificado';
+        if (!label) return { name: 'Não identificado', own: false };
         const shared = label.match(/^([^:]{2,60}):\s*(.+)$/);
-        return cleanText(shared ? shared[1] : label) || 'Não identificado';
+        if (shared) return { name: cleanText(shared[1]) || 'Não identificado', own: false };
+        return { name: loggedPlayerName(), own: true };
     }
 
     function extractCommandName(row) {
@@ -273,6 +280,7 @@
                 if (!isAttackCommandRow(row)) return;
                 const type = commandType(row);
                 const arrival = extractArrival(row);
+                const attacker = extractAttacker(row);
                 const detailAnchor = row.querySelector(
                     'a[href*="screen=info_command"],a[href*="command_id="]'
                 );
@@ -280,7 +288,8 @@
                     id: cleanText(row.getAttribute('data-id'))
                         || cleanText(detailAnchor?.getAttribute('href'))
                         || [village.id, rowIndex, extractCommandName(row)].join('-'),
-                    player: extractAttacker(row),
+                    player: attacker.name,
+                    own: attacker.own,
                     name: extractCommandName(row),
                     type: type,
                     noble: commandHasNoble(row),
@@ -328,7 +337,7 @@
             #${SCRIPT_ID} .cts-progress{height:7px;background:#26344b;border-radius:99px;overflow:hidden}
             #${SCRIPT_ID} .cts-progress span{display:block;width:0;height:100%;background:linear-gradient(90deg,var(--accent),#43e6c6);transition:width .25s ease}
             #${SCRIPT_ID} .cts-body{flex:1;min-height:0;overflow:auto;padding:14px 22px 20px}
-            #${SCRIPT_ID} .cts-stats{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:9px;margin-bottom:13px}
+            #${SCRIPT_ID} .cts-stats{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:9px;margin-bottom:13px}
             #${SCRIPT_ID} .cts-stat{padding:12px 13px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(150deg,var(--panel2),#141d2d)}
             #${SCRIPT_ID} .cts-stat strong{display:block;color:#fff;font-size:22px;line-height:1.1;margin-bottom:4px}
             #${SCRIPT_ID} .cts-stat span{color:var(--muted);font-size:11px}
@@ -378,6 +387,7 @@
             #${SCRIPT_ID} .cts-command-grid.header{color:#8fa1bc;font-size:10px;text-transform:uppercase;letter-spacing:.07em;background:#121b2b}
             #${SCRIPT_ID} .cts-command-grid:not(.header):hover{background:#1d2a40}
             #${SCRIPT_ID} .cts-player{font-weight:700;color:#fff;overflow:hidden;text-overflow:ellipsis}
+            #${SCRIPT_ID} .cts-own{display:inline-flex;margin-left:6px;padding:2px 6px;border:1px solid rgba(22,198,163,.55);border-radius:99px;background:rgba(22,198,163,.12);color:#5ce6cb;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;vertical-align:1px}
             #${SCRIPT_ID} .cts-type{display:inline-flex;align-items:center;gap:6px;color:#dce5f3}
             #${SCRIPT_ID} .cts-type img{width:16px;height:16px}
             #${SCRIPT_ID} .cts-arrival{font-weight:700;color:#68ead0}
@@ -552,7 +562,7 @@
                 : escapeHtml(command.name);
             return `
                 <div class="cts-command-grid">
-                    <div class="cts-player">${escapeHtml(command.player)}</div>
+                    <div class="cts-player">${escapeHtml(command.player)}${command.own ? '<span class="cts-own">Seu comando</span>' : ''}</div>
                     <div class="cts-type"><img src="${TYPE_ICONS[command.type]}" alt="">${escapeHtml(TYPE_LABELS[command.type])}${command.noble ? ` <span class="cts-badge"><img src="${TYPE_ICONS.noble}" alt="">Nobre</span>` : ''}</div>
                     <div><span class="cts-arrival">${escapeHtml(command.arrival)}</span>${command.countdown && command.countdown !== command.arrival ? `<span class="cts-countdown">Chega em ${escapeHtml(command.countdown)}</span>` : ''}</div>
                     <div>${fourth}</div>
@@ -607,12 +617,14 @@
         if (!element) return;
         const villages = new Set(commands.map(function (command) { return command.villageId; })).size;
         const players = new Set(commands.map(function (command) { return command.player; })).size;
+        const ownCommands = commands.filter(function (command) { return command.own; }).length;
         const nextTimestamp = soonestTimestamp(commands);
         const next = nextTimestamp === Number.MAX_SAFE_INTEGER ? '—' : formatArrivalTimestamp(nextTimestamp);
         element.innerHTML = `
             <div class="cts-stat"><strong>${formatNumber(villages)}</strong><span>Aldeias sob ataque</span></div>
             <div class="cts-stat"><strong>${formatNumber(commands.length)}</strong><span>Ataques visíveis</span></div>
             <div class="cts-stat"><strong>${formatNumber(players)}</strong><span>Jogadores atacando</span></div>
+            <div class="cts-stat"><strong>${formatNumber(ownCommands)}</strong><span>Seus ataques</span></div>
             <div class="cts-stat"><strong>${formatNumber(countByType(commands, 'noble'))}</strong><span>Possíveis nobres</span></div>
             <div class="cts-stat"><strong style="font-size:${next === '—' ? '22px' : '15px'}">${escapeHtml(next)}</strong><span>Próxima chegada</span></div>
         `;
@@ -655,7 +667,7 @@
             const playerCommands = entry[1];
             return `
                 <tr>
-                    <td>${escapeHtml(entry[0])}</td>
+                    <td>${escapeHtml(entry[0])}${playerCommands.some(function (command) { return command.own; }) ? '<span class="cts-own">Você</span>' : ''}</td>
                     <td><span class="cts-force-dot" style="background:${colors.large}"></span>${formatNumber(countByType(playerCommands, 'large'))}</td>
                     <td><span class="cts-force-dot" style="background:${colors.medium}"></span>${formatNumber(countByType(playerCommands, 'medium'))}</td>
                     <td><span class="cts-force-dot" style="background:${colors.small}"></span>${formatNumber(countByType(playerCommands, 'small'))}</td>
@@ -707,10 +719,11 @@
     }
 
     function exportCsv() {
-        const header = ['Jogador', 'Aldeia atacada', 'Coordenada', 'Tipo', 'Nome do comando', 'Chegada', 'Contagem regressiva'];
+        const header = ['Jogador', 'Seu comando', 'Aldeia atacada', 'Coordenada', 'Tipo', 'Nome do comando', 'Chegada', 'Contagem regressiva'];
         const rows = [header].concat(filteredCommands().map(function (command) {
             return [
                 command.player,
+                command.own ? 'Sim' : 'Não',
                 command.villageName,
                 command.villageCoordinate,
                 TYPE_LABELS[command.type] + (command.noble ? ' + possível nobre' : ''),
