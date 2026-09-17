@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.0.0
+// @version      1.0.1
 // @description  Analisa os ataques visíveis contra as aldeias de um jogador, com horários, filtros e agrupamento por aldeia ou atacante.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -690,17 +690,9 @@
         }
     }
 
-    function notifyError(message) {
-        if (window.UI?.ErrorMessage) window.UI.ErrorMessage(message);
-        else window.alert(message);
-    }
-
     function init() {
         const screen = String(window.game_data?.screen || new URLSearchParams(window.location.search).get('screen') || '');
-        if (screen !== 'info_player') {
-            notifyError('Abra o perfil de um jogador para usar “Ataques por Jogador”.');
-            return;
-        }
+        if (screen !== 'info_player') return;
         addStyles();
         state.playerName = getPlayerName();
         renderShell();
