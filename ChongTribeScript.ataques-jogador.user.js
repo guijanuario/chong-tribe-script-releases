@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.2.1
-// @description  Analisa ataques e apoios compartilhados nas aldeias de um jogador, com horários, tropas, filtros e agrupamentos.
+// @version      1.3.0
+// @description  Analisa movimentações compartilhadas por jogador e mantém uma central local da tribo com o histórico das consultas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
 // @run-at       document-idle
@@ -15,6 +15,9 @@
     'use strict';
 
     const SCRIPT_ID = 'cts-ataques-jogador';
+    const CENTRAL_ID = 'cts-central-comandos-tribo';
+    const DASHBOARD_STORAGE_VERSION = 1;
+    const SNAPSHOT_STALE_MS = 12 * 60 * 60 * 1000;
     const REQUEST_DELAY_MS = 1400;
     const REQUEST_JITTER_MS = 700;
     const REQUEST_CONCURRENCY = 1;
@@ -55,6 +58,13 @@
         search: '',
         type: 'all',
         sort: 'count',
+    };
+
+    const centralState = {
+        search: '',
+        attacker: 'all',
+        victim: 'all',
+        type: 'all',
     };
 
     function cleanText(value) {
@@ -115,6 +125,113 @@
             .replace(/\s*\([^)]*\)\s*$/, '')
             .trim();
         return title || 'Jogador selecionado';
+    }
+
+    function worldId() {
+        return cleanText(window.game_data?.world) || window.location.hostname.split('.')[0] || 'mundo';
+    }
+
+    function allyId() {
+        return cleanText(window.game_data?.player?.ally) || 'sem-tribo';
+    }
+
+    function dashboardStorageKey() {
+        return ['cts', 'central-comandos', DASHBOARD_STORAGE_VERSION, worldId(), allyId()].join(':');
+    }
+
+    function emptyDashboard() {
+        return {
+            version: DASHBOARD_STORAGE_VERSION,
+            world: worldId(),
+            allyId: allyId(),
+            updatedAt: 0,
+            directory: {},
+            snapshots: {},
+        };
+    }
+
+    function loadDashboard() {
+        try {
+            const parsed = JSON.parse(window.localStorage.getItem(dashboardStorageKey()) || 'null');
+            if (!parsed || parsed.version !== DASHBOARD_STORAGE_VERSION) return emptyDashboard();
+            parsed.directory = parsed.directory && typeof parsed.directory === 'object' ? parsed.directory : {};
+            parsed.snapshots = parsed.snapshots && typeof parsed.snapshots === 'object' ? parsed.snapshots : {};
+            return parsed;
+        } catch (_error) {
+            return emptyDashboard();
+        }
+    }
+
+    function saveDashboard(dashboard) {
+        dashboard.updatedAt = Date.now();
+        try {
+            window.localStorage.setItem(dashboardStorageKey(), JSON.stringify(dashboard));
+            return true;
+        } catch (error) {
+            console.error('[Chong Tribe Script — Central da Tribo] Não foi possível salvar os dados locais.', error);
+            return false;
+        }
+    }
+
+    function currentProfileId() {
+        return cleanText(new URLSearchParams(window.location.search).get('id')) || normalize(state.playerName).replace(/[^a-z0-9]+/g, '-');
+    }
+
+    function serializableCommand(command) {
+        return {
+            id: command.id,
+            player: command.player,
+            own: Boolean(command.own),
+            name: command.name,
+            type: command.type,
+            kind: command.kind,
+            noble: Boolean(command.noble),
+            troops: command.troops || {},
+            troopStatus: command.troopStatus,
+            arrival: command.arrival,
+            arrivalTimestamp: command.arrivalTimestamp,
+            countdown: command.countdown,
+            villageId: command.villageId,
+            villageName: command.villageName,
+            villageCoordinate: command.villageCoordinate,
+            villageUrl: command.villageUrl,
+        };
+    }
+
+    function saveCurrentSnapshot() {
+        const playerId = currentProfileId();
+        const dashboard = loadDashboard();
+        const profileUrl = window.location.href;
+        dashboard.directory[playerId] = {
+            playerId: playerId,
+            playerName: state.playerName,
+            profileUrl: profileUrl,
+        };
+        dashboard.snapshots[playerId] = {
+            playerId: playerId,
+            playerName: state.playerName,
+            profileUrl: profileUrl,
+            capturedAt: Date.now(),
+            villageCount: state.villages.length,
+            commands: state.commands.map(serializableCommand),
+        };
+        return saveDashboard(dashboard);
+    }
+
+    function captureMemberDirectory() {
+        const dashboard = loadDashboard();
+        let found = 0;
+        document.querySelectorAll('a[href*="screen=info_player"][href*="id="]').forEach(function (anchor) {
+            const url = gameUrl(anchor.getAttribute('href'));
+            if (!url) return;
+            const playerId = cleanText(new URL(url).searchParams.get('id'));
+            const playerName = cleanText(anchor.textContent);
+            if (!playerId || !playerName) return;
+            dashboard.directory[playerId] = { playerId: playerId, playerName: playerName, profileUrl: url };
+            found += 1;
+        });
+        if (found) saveDashboard(dashboard);
+        return found;
     }
 
     function hasAttackMarker(row) {
@@ -520,6 +637,65 @@
         document.head.appendChild(style);
     }
 
+    function addCentralStyles() {
+        if (document.getElementById(CENTRAL_ID + '-style')) return;
+        const style = document.createElement('style');
+        style.id = CENTRAL_ID + '-style';
+        style.textContent = `
+            #${SCRIPT_ID} .cts-head-actions{display:flex;align-items:center;gap:8px}
+            #${SCRIPT_ID} .cts-head-actions .cts-btn{height:38px}
+            #${CENTRAL_ID}-overlay{position:fixed;inset:0;z-index:100002;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(5,9,17,.78);backdrop-filter:blur(4px);box-sizing:border-box}
+            #${CENTRAL_ID}{--bg:#0d1524;--panel:#162136;--panel2:#1c2941;--line:#354761;--text:#f5f7fb;--muted:#9fb0c8;--accent:#16c6a3;position:relative;width:min(1320px,98vw);height:min(880px,95vh);display:flex;flex-direction:column;overflow:hidden;border:1px solid #425876;border-radius:18px;background:linear-gradient(145deg,#111b2d,#0a111e);color:var(--text);box-shadow:0 32px 100px rgba(0,0,0,.65);font-family:Arial,Helvetica,sans-serif;font-size:13px}
+            #${CENTRAL_ID} *{box-sizing:border-box}
+            #${CENTRAL_ID} button,#${CENTRAL_ID} input,#${CENTRAL_ID} select{font:inherit}
+            #${CENTRAL_ID} .ctc-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 20px;border-bottom:1px solid var(--line);background:linear-gradient(100deg,rgba(22,198,163,.15),transparent 55%)}
+            #${CENTRAL_ID} .ctc-brand{display:flex;align-items:center;gap:12px;min-width:0}
+            #${CENTRAL_ID} .ctc-logo{width:46px;height:46px;display:grid;place-items:center;border-radius:13px;background:linear-gradient(145deg,#16c6a3,#087c73);color:#062d29;font-weight:900}
+            #${CENTRAL_ID} h2{margin:0 0 3px;font-size:23px;color:#fff;line-height:1.15}
+            #${CENTRAL_ID} .ctc-subtitle{color:var(--muted);font-size:11px}
+            #${CENTRAL_ID} .ctc-head-actions{display:flex;gap:8px;align-items:center}
+            #${CENTRAL_ID} .ctc-close{width:38px;height:38px;border:1px solid var(--line);border-radius:10px;background:#111827;color:#d6dfec;cursor:pointer;font-size:22px}
+            #${CENTRAL_ID} .ctc-btn{height:36px;padding:0 12px;border:1px solid #40536f;border-radius:8px;background:#263852;color:#fff;cursor:pointer;white-space:nowrap}
+            #${CENTRAL_ID} .ctc-btn:hover{filter:brightness(1.15)}
+            #${CENTRAL_ID} .ctc-btn.primary{background:#0f8f7c;border-color:#16c6a3}
+            #${CENTRAL_ID} .ctc-body{flex:1;min-height:0;overflow:auto;padding:15px 20px 20px}
+            #${CENTRAL_ID} .ctc-notice{margin-bottom:12px;padding:10px 12px;border:1px solid rgba(22,198,163,.38);border-radius:10px;background:rgba(22,198,163,.09);color:#bff7ea;line-height:1.45}
+            #${CENTRAL_ID} .ctc-stats{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:9px;margin-bottom:12px}
+            #${CENTRAL_ID} .ctc-stat{padding:12px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(145deg,var(--panel2),#121b2b)}
+            #${CENTRAL_ID} .ctc-stat strong{display:block;font-size:21px;color:#fff;line-height:1.1;margin-bottom:4px}
+            #${CENTRAL_ID} .ctc-stat span{color:var(--muted);font-size:10px}
+            #${CENTRAL_ID} .ctc-force{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:12px}
+            #${CENTRAL_ID} .ctc-force-card{position:relative;overflow:hidden;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#111a2a}
+            #${CENTRAL_ID} .ctc-force-card:before{content:'';position:absolute;inset:0 auto 0 0;width:4px;background:var(--color)}
+            #${CENTRAL_ID} .ctc-force-card strong{font-size:21px;margin-right:7px}
+            #${CENTRAL_ID} .ctc-force-card span{color:#d6e0ef;font-weight:700}
+            #${CENTRAL_ID} .ctc-toolbar{display:grid;grid-template-columns:minmax(190px,1.5fr) repeat(3,minmax(145px,.75fr)) auto;gap:8px;margin-bottom:12px}
+            #${CENTRAL_ID} .ctc-input,#${CENTRAL_ID} .ctc-select{width:100%;height:38px;border:1px solid #3b4e69;border-radius:8px;background:#0f1727;color:#edf2fa;padding:0 10px;outline:none}
+            #${CENTRAL_ID} .ctc-section{margin-top:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden}
+            #${CENTRAL_ID} .ctc-section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;background:linear-gradient(90deg,#202e47,#172236)}
+            #${CENTRAL_ID} .ctc-section-title{font-size:15px;font-weight:800;color:#fff}
+            #${CENTRAL_ID} .ctc-section-note{margin-top:3px;color:var(--muted);font-size:10px}
+            #${CENTRAL_ID} .ctc-scroll{overflow:auto;max-height:285px}
+            #${CENTRAL_ID} table{width:100%;border-collapse:collapse;font-size:11px}
+            #${CENTRAL_ID} th,#${CENTRAL_ID} td{padding:9px 10px;border-top:1px solid #2c3c55;text-align:left;white-space:nowrap}
+            #${CENTRAL_ID} th{position:sticky;top:0;z-index:1;background:#121c2d;color:#8fa1ba;font-size:9px;text-transform:uppercase;letter-spacing:.06em}
+            #${CENTRAL_ID} tbody tr:hover{background:#1c2a41}
+            #${CENTRAL_ID} a{color:#65e5ce;text-decoration:none}
+            #${CENTRAL_ID} .ctc-type{display:inline-flex;align-items:center;gap:5px}
+            #${CENTRAL_ID} .ctc-type img{width:16px;height:16px}
+            #${CENTRAL_ID} .ctc-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+            #${CENTRAL_ID} .ctc-fresh{color:#64e6c5;font-weight:700}
+            #${CENTRAL_ID} .ctc-stale{color:#ffb36b;font-weight:700}
+            #${CENTRAL_ID} .ctc-empty{padding:32px;text-align:center;color:var(--muted)}
+            #${CENTRAL_ID} .ctc-coverage{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:7px;padding:11px}
+            #${CENTRAL_ID} .ctc-member{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;border:1px solid #33445f;border-radius:8px;background:#111a2a}
+            #${CENTRAL_ID} .ctc-member small{display:block;color:var(--muted);margin-top:3px}
+            @media(max-width:920px){#${CENTRAL_ID} .ctc-stats{grid-template-columns:repeat(2,1fr)}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr 1fr}#${CENTRAL_ID} .ctc-force{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-head-actions .ctc-btn{display:none}}
+            @media(max-width:560px){#${CENTRAL_ID}-overlay{padding:0}#${CENTRAL_ID}{width:100vw;height:100vh;border-radius:0}#${CENTRAL_ID} .ctc-body,#${CENTRAL_ID} .ctc-head{padding-left:11px;padding-right:11px}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr}#${SCRIPT_ID} .cts-head-actions .cts-btn{display:none}}
+        `;
+        document.head.appendChild(style);
+    }
+
     function renderShell() {
         document.getElementById(SCRIPT_ID + '-overlay')?.remove();
         const overlay = document.createElement('div');
@@ -534,7 +710,10 @@
                             <div class="cts-subtitle">Ataques e apoios chegando às aldeias deste jogador</div>
                         </div>
                     </div>
-                    <button class="cts-close" data-action="close" title="Fechar">×</button>
+                    <div class="cts-head-actions">
+                        <button class="cts-btn" data-action="dashboard">Central da tribo</button>
+                        <button class="cts-close" data-action="close" title="Fechar">×</button>
+                    </div>
                 </header>
                 <div class="cts-status-wrap">
                     <div class="cts-status" id="${SCRIPT_ID}-status"><span>Preparando a leitura…</span><span></span></div>
@@ -591,6 +770,8 @@
                 exportCsv();
             } else if (button.dataset.action === 'load-supports') {
                 loadSupportDetails();
+            } else if (button.dataset.action === 'dashboard') {
+                openDashboard();
             } else if (button.dataset.view) {
                 state.view = button.dataset.view;
                 overlay.querySelectorAll('[data-view]').forEach(function (tab) {
@@ -993,6 +1174,218 @@
         window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
     }
 
+    function formatAge(timestamp) {
+        const elapsed = Math.max(0, Date.now() - (Number(timestamp) || 0));
+        if (elapsed < 60 * 1000) return 'agora';
+        if (elapsed < 60 * 60 * 1000) return Math.floor(elapsed / (60 * 1000)) + ' min atrás';
+        if (elapsed < 24 * 60 * 60 * 1000) return Math.floor(elapsed / (60 * 60 * 1000)) + ' h atrás';
+        return Math.floor(elapsed / (24 * 60 * 60 * 1000)) + ' dia(s) atrás';
+    }
+
+    function dashboardCommands(dashboard) {
+        const commands = [];
+        Object.values(dashboard.snapshots).forEach(function (snapshot) {
+            (snapshot.commands || []).forEach(function (command) {
+                if (command.kind !== 'attack') return;
+                commands.push(Object.assign({}, command, {
+                    victimPlayerId: snapshot.playerId,
+                    victimPlayerName: snapshot.playerName,
+                    victimProfileUrl: snapshot.profileUrl,
+                    capturedAt: snapshot.capturedAt,
+                }));
+            });
+        });
+        return commands;
+    }
+
+    function filteredDashboardCommands(dashboard) {
+        const query = normalize(centralState.search);
+        return dashboardCommands(dashboard).filter(function (command) {
+            if (centralState.attacker !== 'all' && command.player !== centralState.attacker) return false;
+            if (centralState.victim !== 'all' && command.victimPlayerId !== centralState.victim) return false;
+            if (centralState.type === 'noble' && !command.noble) return false;
+            if (centralState.type !== 'all' && centralState.type !== 'noble' && command.type !== centralState.type) return false;
+            if (!query) return true;
+            return normalize([
+                command.player,
+                command.victimPlayerName,
+                command.villageName,
+                command.villageCoordinate,
+                command.name,
+            ].join(' ')).includes(query);
+        });
+    }
+
+    function uniqueSorted(values) {
+        return Array.from(new Set(values.filter(Boolean))).sort(function (a, b) {
+            return a.localeCompare(b, 'pt-BR');
+        });
+    }
+
+    function centralTypeLabel(command) {
+        return TYPE_LABELS[command.type] + (command.noble ? ' + nobre' : '');
+    }
+
+    function renderDashboard() {
+        const root = document.getElementById(CENTRAL_ID);
+        if (!root) return;
+        const dashboard = loadDashboard();
+        const allCommands = dashboardCommands(dashboard);
+        const commands = filteredDashboardCommands(dashboard);
+        const snapshots = Object.values(dashboard.snapshots);
+        const directory = Object.values(dashboard.directory);
+        const attackers = uniqueSorted(allCommands.map(function (command) { return command.player; }));
+        const victims = directory.slice().sort(function (a, b) { return a.playerName.localeCompare(b.playerName, 'pt-BR'); });
+        const attackedMembers = new Set(commands.map(function (command) { return command.victimPlayerId; })).size;
+        const attackingPlayers = new Set(commands.map(function (command) { return command.player; })).size;
+        const nextTimestamp = soonestTimestamp(commands);
+        const nextArrival = nextTimestamp === Number.MAX_SAFE_INTEGER ? '—' : formatArrivalTimestamp(nextTimestamp);
+        const scanCoverage = directory.length ? Math.round((snapshots.length / directory.length) * 100) : 0;
+
+        const attackerOptions = attackers.map(function (name) {
+            return `<option value="${escapeHtml(name)}"${centralState.attacker === name ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+        }).join('');
+        const victimOptions = victims.map(function (member) {
+            return `<option value="${escapeHtml(member.playerId)}"${centralState.victim === member.playerId ? ' selected' : ''}>${escapeHtml(member.playerName)}</option>`;
+        }).join('');
+
+        const byAttacker = Array.from(groupCommands(commands, function (command) { return command.player; }))
+            .sort(function (a, b) { return b[1].length - a[1].length || a[0].localeCompare(b[0], 'pt-BR'); });
+        const attackerRows = byAttacker.map(function (entry) {
+            const playerCommands = entry[1];
+            const targetPlayers = new Set(playerCommands.map(function (command) { return command.victimPlayerId; })).size;
+            const targetVillages = new Set(playerCommands.map(function (command) { return command.victimPlayerId + ':' + (command.villageId || command.villageCoordinate); })).size;
+            const closest = soonestTimestamp(playerCommands);
+            return `<tr>
+                <td><strong>${escapeHtml(entry[0])}</strong></td>
+                <td><span class="ctc-dot" style="background:#ef4444"></span>${formatNumber(countByType(playerCommands, 'large'))}</td>
+                <td><span class="ctc-dot" style="background:#a66b3f"></span>${formatNumber(countByType(playerCommands, 'medium'))}</td>
+                <td><span class="ctc-dot" style="background:#39b86b"></span>${formatNumber(countByType(playerCommands, 'small'))}</td>
+                <td>${formatNumber(countByType(playerCommands, 'noble'))}</td>
+                <td>${formatNumber(targetPlayers)}</td><td>${formatNumber(targetVillages)}</td>
+                <td>${closest === Number.MAX_SAFE_INTEGER ? '—' : escapeHtml(formatArrivalTimestamp(closest))}</td>
+                <td><strong>${formatNumber(playerCommands.length)}</strong></td>
+            </tr>`;
+        }).join('');
+
+        const movementRows = commands.slice().sort(function (a, b) {
+            return (a.arrivalTimestamp || Number.MAX_SAFE_INTEGER) - (b.arrivalTimestamp || Number.MAX_SAFE_INTEGER);
+        }).map(function (command) {
+            const stale = Date.now() - command.capturedAt > SNAPSHOT_STALE_MS;
+            return `<tr>
+                <td><strong>${escapeHtml(command.player)}</strong>${command.own ? ' <span class="ctc-fresh">Você</span>' : ''}</td>
+                <td><span class="ctc-type"><img src="${TYPE_ICONS[command.type]}" alt="">${escapeHtml(centralTypeLabel(command))}</span></td>
+                <td><a href="${escapeHtml(command.victimProfileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(command.victimPlayerName)}</a></td>
+                <td><a href="${escapeHtml(command.villageUrl || command.victimProfileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(command.villageCoordinate || command.villageName)}</a></td>
+                <td>${escapeHtml(command.arrival || 'Horário não disponível')}</td>
+                <td class="${stale ? 'ctc-stale' : 'ctc-fresh'}">${escapeHtml(formatAge(command.capturedAt))}</td>
+            </tr>`;
+        }).join('');
+
+        const members = Object.values(Object.assign({}, dashboard.directory));
+        const coverageRows = members.sort(function (a, b) { return a.playerName.localeCompare(b.playerName, 'pt-BR'); }).map(function (member) {
+            const snapshot = dashboard.snapshots[member.playerId];
+            const stale = snapshot && Date.now() - snapshot.capturedAt > SNAPSHOT_STALE_MS;
+            const label = snapshot ? (stale ? 'Desatualizado · ' : 'Atualizado · ') + formatAge(snapshot.capturedAt) : 'Ainda não consultado';
+            return `<div class="ctc-member"><div><a href="${escapeHtml(member.profileUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(member.playerName)}</strong></a><small class="${snapshot ? (stale ? 'ctc-stale' : 'ctc-fresh') : ''}">${escapeHtml(label)}</small></div><span>${snapshot ? formatNumber((snapshot.commands || []).filter(function (command) { return command.kind === 'attack'; }).length) : '—'}</span></div>`;
+        }).join('');
+
+        root.querySelector('.ctc-body').innerHTML = `
+            <div class="ctc-notice">A Central reúne somente os perfis que você já abriu. Ela não consulta todos os membros em segundo plano: isso reduz requisições e evita acionar a proteção contra bots. Dados com mais de 12 horas aparecem como desatualizados.</div>
+            <div class="ctc-stats">
+                <div class="ctc-stat"><strong>${formatNumber(snapshots.length)}</strong><span>Jogadores consultados</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(directory.length)}</strong><span>Membros identificados</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(attackedMembers)}</strong><span>Membros sob ataque</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(commands.length)}</strong><span>Ataques visíveis</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(attackingPlayers)}</strong><span>Inimigos atacando</span></div>
+                <div class="ctc-stat"><strong style="font-size:${nextArrival === '—' ? '21px' : '14px'}">${escapeHtml(nextArrival)}</strong><span>Próxima chegada</span></div>
+            </div>
+            <div class="ctc-force">
+                <div class="ctc-force-card" style="--color:#ef4444"><strong>${formatNumber(countByType(commands, 'large'))}</strong><span>Machados vermelhos</span></div>
+                <div class="ctc-force-card" style="--color:#a66b3f"><strong>${formatNumber(countByType(commands, 'medium'))}</strong><span>Machados marrons</span></div>
+                <div class="ctc-force-card" style="--color:#39b86b"><strong>${formatNumber(countByType(commands, 'small'))}</strong><span>Machados verdes</span></div>
+            </div>
+            <div class="ctc-toolbar">
+                <input class="ctc-input" data-central-filter="search" type="search" value="${escapeHtml(centralState.search)}" placeholder="Buscar atacante, membro, aldeia ou coordenada…">
+                <select class="ctc-select" data-central-filter="attacker"><option value="all">Todos os atacantes</option>${attackerOptions}</select>
+                <select class="ctc-select" data-central-filter="victim"><option value="all">Todos os membros</option>${victimOptions}</select>
+                <select class="ctc-select" data-central-filter="type">
+                    <option value="all"${centralState.type === 'all' ? ' selected' : ''}>Todos os tipos</option>
+                    <option value="noble"${centralState.type === 'noble' ? ' selected' : ''}>Possíveis nobres</option>
+                    <option value="large"${centralState.type === 'large' ? ' selected' : ''}>Machados vermelhos</option>
+                    <option value="medium"${centralState.type === 'medium' ? ' selected' : ''}>Machados marrons</option>
+                    <option value="small"${centralState.type === 'small' ? ' selected' : ''}>Machados verdes</option>
+                </select>
+                <button class="ctc-btn" data-central-action="export"${commands.length ? '' : ' disabled'}>Exportar CSV</button>
+            </div>
+            <section class="ctc-section">
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Quem está atacando a tribo</div><div class="ctc-section-note">Panorama consolidado dos perfis já consultados</div></div><span>${formatNumber(byAttacker.length)} atacante(s)</span></div>
+                ${attackerRows ? `<div class="ctc-scroll"><table><thead><tr><th>Jogador</th><th>Vermelhos</th><th>Marrons</th><th>Verdes</th><th>Nobres</th><th>Membros</th><th>Alvos</th><th>Próxima chegada</th><th>Total</th></tr></thead><tbody>${attackerRows}</tbody></table></div>` : '<div class="ctc-empty">Nenhum ataque corresponde aos filtros atuais.</div>'}
+            </section>
+            <section class="ctc-section">
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Movimentações consolidadas</div><div class="ctc-section-note">Atacante, alvo, horário e idade da última consulta</div></div><span>${formatNumber(commands.length)} comando(s)</span></div>
+                ${movementRows ? `<div class="ctc-scroll"><table><thead><tr><th>Atacante</th><th>Tipo</th><th>Membro atacado</th><th>Aldeia</th><th>Chegada</th><th>Coletado</th></tr></thead><tbody>${movementRows}</tbody></table></div>` : '<div class="ctc-empty">Nenhuma movimentação disponível.</div>'}
+            </section>
+            <section class="ctc-section">
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Cobertura dos membros</div><div class="ctc-section-note">Abra a página “Membros” da tribo uma vez para preencher o diretório; depois visite os perfis pendentes</div></div><span>${directory.length ? scanCoverage + '%' : 'Diretório vazio'}</span></div>
+                ${coverageRows ? `<div class="ctc-coverage">${coverageRows}</div>` : '<div class="ctc-empty">Nenhum membro identificado. Abra a lista de membros da tribo e execute o script nessa página.</div>'}
+            </section>
+        `;
+
+        root.querySelectorAll('[data-central-filter]').forEach(function (element) {
+            const eventName = element.tagName === 'INPUT' ? 'input' : 'change';
+            element.addEventListener(eventName, function (event) {
+                centralState[event.target.dataset.centralFilter] = event.target.value;
+                renderDashboard();
+                const replacement = document.querySelector('#' + CENTRAL_ID + ' [data-central-filter="' + event.target.dataset.centralFilter + '"]');
+                if (eventName === 'input' && replacement) {
+                    replacement.focus();
+                    replacement.setSelectionRange(replacement.value.length, replacement.value.length);
+                }
+            });
+        });
+    }
+
+    function exportDashboardCsv() {
+        const dashboard = loadDashboard();
+        const rows = [['Atacante', 'Membro atacado', 'Aldeia', 'Coordenada', 'Tipo', 'Possível nobre', 'Chegada', 'Coletado em']]
+            .concat(filteredDashboardCommands(dashboard).map(function (command) {
+                return [command.player, command.victimPlayerName, command.villageName, command.villageCoordinate, TYPE_LABELS[command.type], command.noble ? 'Sim' : 'Não', command.arrival, formatArrivalTimestamp(command.capturedAt)];
+            }));
+        const csv = '\uFEFF' + rows.map(function (row) { return row.map(csvCell).join(';'); }).join('\r\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'central-ataques-' + worldId() + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+        link.click();
+        window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
+    }
+
+    function openDashboard() {
+        addCentralStyles();
+        document.getElementById(CENTRAL_ID + '-overlay')?.remove();
+        const dashboard = loadDashboard();
+        const overlay = document.createElement('div');
+        overlay.id = CENTRAL_ID + '-overlay';
+        overlay.innerHTML = `
+            <section id="${CENTRAL_ID}" role="dialog" aria-modal="true" aria-label="Central de comandos da tribo">
+                <header class="ctc-head">
+                    <div class="ctc-brand"><div class="ctc-logo">CTS</div><div><h2>Central de ataques da tribo</h2><div class="ctc-subtitle">${escapeHtml(worldId().toUpperCase())} · dados salvos neste navegador${dashboard.updatedAt ? ' · última alteração ' + escapeHtml(formatAge(dashboard.updatedAt)) : ''}</div></div></div>
+                    <div class="ctc-head-actions"><button class="ctc-btn primary" data-central-action="refresh">Atualizar painel</button><button class="ctc-close" data-central-action="close" title="Fechar">×</button></div>
+                </header>
+                <main class="ctc-body"></main>
+            </section>`;
+        document.body.appendChild(overlay);
+        overlay.addEventListener('click', function (event) {
+            const button = event.target.closest('[data-central-action]');
+            if (!button) return;
+            if (button.dataset.centralAction === 'close') overlay.remove();
+            if (button.dataset.centralAction === 'refresh') renderDashboard();
+            if (button.dataset.centralAction === 'export') exportDashboardCsv();
+        });
+        renderDashboard();
+    }
+
     async function loadSupportDetails() {
         if (state.running || state.supportDetailsLoading || state.supportDetailsLoaded) return;
         const supports = state.commands.filter(function (command) {
@@ -1023,6 +1416,7 @@
         state.running = false;
         state.supportDetailsLoading = false;
         state.supportDetailsLoaded = !state.cancelled;
+        if (!state.cancelled) saveCurrentSnapshot();
         updateSupportLoadButton();
         if (document.getElementById(SCRIPT_ID)) {
             const visible = supports.filter(function (command) { return command.troopStatus === 'available'; }).length;
@@ -1052,6 +1446,7 @@
         const links = collectVillageLinks();
         if (!links.length) {
             state.running = false;
+            saveCurrentSnapshot();
             setStatus('Nenhuma aldeia com movimentações visíveis foi encontrada.', 'Verifique o compartilhamento dos comandos.', 100, true);
             return;
         }
@@ -1088,6 +1483,7 @@
         await Promise.all(Array.from({ length: Math.min(REQUEST_CONCURRENCY, links.length) }, worker));
         const supports = state.commands.filter(function (command) { return command.kind === 'support'; });
         state.running = false;
+        if (!state.cancelled) saveCurrentSnapshot();
         updateSupportLoadButton();
         if (!document.getElementById(SCRIPT_ID)) return;
         renderResults();
@@ -1105,8 +1501,17 @@
 
     function init() {
         const screen = String(window.game_data?.screen || new URLSearchParams(window.location.search).get('screen') || '');
+        const mode = String(new URLSearchParams(window.location.search).get('mode') || '');
+        if (screen === 'ally' && mode === 'members') {
+            addStyles();
+            addCentralStyles();
+            captureMemberDirectory();
+            openDashboard();
+            return;
+        }
         if (screen !== 'info_player') return;
         addStyles();
+        addCentralStyles();
         state.playerName = getPlayerName();
         renderShell();
         loadData();
