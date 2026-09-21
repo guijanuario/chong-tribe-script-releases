@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.4.1
+// @version      1.5.0
 // @description  Analisa ataques compartilhados nos perfis inimigos e mantém uma central local focada nas tribos adversárias escolhidas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -18,6 +18,8 @@
     const CENTRAL_ID = 'cts-central-comandos-tribo';
     const DASHBOARD_STORAGE_VERSION = 2;
     const SNAPSHOT_STALE_MS = 12 * 60 * 60 * 1000;
+    const AUTO_MIN_INTERVAL_SECONDS = 20;
+    const AUTO_DEFAULT_INTERVAL_SECONDS = 30;
     const REQUEST_DELAY_MS = 1400;
     const REQUEST_JITTER_MS = 700;
     const REQUEST_CONCURRENCY = 1;
@@ -69,6 +71,7 @@
         busy: false,
         message: '',
         error: false,
+        autoInterval: AUTO_DEFAULT_INTERVAL_SECONDS,
     };
 
     function cleanText(value) {
@@ -177,6 +180,46 @@
             console.error('[Chong Tribe Script — Central da Tribo] Não foi possível salvar os dados locais.', error);
             return false;
         }
+    }
+
+    function automationStorageKey() {
+        return ['cts', 'coleta-automatica', worldId(), allyId()].join(':');
+    }
+
+    function loadAutomation() {
+        try {
+            const value = JSON.parse(window.localStorage.getItem(automationStorageKey()) || 'null');
+            return value && typeof value === 'object' ? value : { active: false };
+        } catch (_error) {
+            return { active: false };
+        }
+    }
+
+    function saveAutomation(value) {
+        window.localStorage.setItem(automationStorageKey(), JSON.stringify(value));
+    }
+
+    function pauseAutomation(message, isError) {
+        const automation = loadAutomation();
+        automation.active = false;
+        automation.pausedAt = Date.now();
+        automation.message = message || 'Coleta automática pausada.';
+        saveAutomation(automation);
+        centralState.message = automation.message;
+        centralState.error = Boolean(isError);
+        renderDashboard();
+    }
+
+    function pendingEnemyMembers(dashboard) {
+        return Object.values(dashboard.directory).filter(function (member) {
+            if (member.active === false || !member.tribeId) return false;
+            const snapshot = dashboard.snapshots[member.playerId];
+            return !snapshot || Date.now() - snapshot.capturedAt > SNAPSHOT_STALE_MS;
+        }).sort(function (a, b) {
+            const aTime = dashboard.snapshots[a.playerId]?.capturedAt || 0;
+            const bTime = dashboard.snapshots[b.playerId]?.capturedAt || 0;
+            return aTime - bTime || a.playerName.localeCompare(b.playerName, 'pt-BR');
+        });
     }
 
     function currentProfileId() {
@@ -402,15 +445,7 @@
 
     function openNextEnemyProfile() {
         const dashboard = loadDashboard();
-        const members = Object.values(dashboard.directory).filter(function (member) {
-            if (member.active === false) return false;
-            const snapshot = dashboard.snapshots[member.playerId];
-            return !snapshot || Date.now() - snapshot.capturedAt > SNAPSHOT_STALE_MS;
-        }).sort(function (a, b) {
-            const aTime = dashboard.snapshots[a.playerId]?.capturedAt || 0;
-            const bTime = dashboard.snapshots[b.playerId]?.capturedAt || 0;
-            return aTime - bTime || a.playerName.localeCompare(b.playerName, 'pt-BR');
-        });
+        const members = pendingEnemyMembers(dashboard);
         if (!members.length) {
             centralState.message = 'Todos os jogadores cadastrados têm uma consulta recente.';
             centralState.error = false;
@@ -418,6 +453,70 @@
             return;
         }
         window.open(members[0].profileUrl, '_blank', 'noopener,noreferrer');
+    }
+
+    function navigateToNextAutomaticTarget() {
+        const automation = loadAutomation();
+        if (!automation.active) return;
+        const pending = pendingEnemyMembers(loadDashboard());
+        if (!pending.length) {
+            automation.active = false;
+            automation.completedAt = Date.now();
+            automation.message = 'Coleta automática concluída: todos os perfis inimigos cadastrados estão atualizados.';
+            saveAutomation(automation);
+            centralState.message = automation.message;
+            centralState.error = false;
+            openDashboard();
+            return;
+        }
+        window.location.assign(pending[0].profileUrl);
+    }
+
+    function startAutomaticCollection() {
+        const pending = pendingEnemyMembers(loadDashboard());
+        if (!pending.length) {
+            centralState.message = 'Não há perfis inimigos pendentes ou desatualizados para coletar.';
+            centralState.error = false;
+            renderDashboard();
+            return;
+        }
+        const intervalSeconds = Math.max(AUTO_MIN_INTERVAL_SECONDS, Number(centralState.autoInterval) || AUTO_DEFAULT_INTERVAL_SECONDS);
+        const automation = {
+            active: true,
+            startedAt: Date.now(),
+            intervalSeconds: intervalSeconds,
+            processed: 0,
+            totalAtStart: pending.length,
+            message: 'Coleta automática iniciada.',
+        };
+        saveAutomation(automation);
+        centralState.message = 'Coleta automática iniciada. Navegando para o primeiro perfil inimigo…';
+        centralState.error = false;
+        renderDashboard();
+        window.setTimeout(navigateToNextAutomaticTarget, 500);
+    }
+
+    function scheduleAutomaticContinuation() {
+        const automation = loadAutomation();
+        if (!automation.active) return;
+        automation.processed = (Number(automation.processed) || 0) + 1;
+        automation.lastPlayerId = currentProfileId();
+        automation.lastProfileAt = Date.now();
+        saveAutomation(automation);
+        const pending = pendingEnemyMembers(loadDashboard());
+        if (!pending.length) {
+            navigateToNextAutomaticTarget();
+            return;
+        }
+        const baseSeconds = Math.max(AUTO_MIN_INTERVAL_SECONDS, Number(automation.intervalSeconds) || AUTO_DEFAULT_INTERVAL_SECONDS);
+        const delaySeconds = baseSeconds + Math.floor(Math.random() * 6);
+        setStatus(
+            'Coleta automática ativa — próximo perfil em ' + delaySeconds + ' segundos.',
+            formatNumber(pending.length) + ' perfil(is) pendente(s) · clique em “Central da tribo” para pausar',
+            100,
+            false
+        );
+        window.setTimeout(navigateToNextAutomaticTarget, delaySeconds * 1000);
     }
 
     function hasAttackMarker(row) {
@@ -721,7 +820,13 @@
         });
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const html = await response.text();
-        return new DOMParser().parseFromString(html, 'text/html');
+        const documentRoot = new DOMParser().parseFromString(html, 'text/html');
+        if (/protecao contra bots|bot protection/.test(normalize(documentRoot.body?.textContent))) {
+            const error = new Error('Proteção contra bots detectada. A coleta automática foi pausada.');
+            error.code = 'BOT_PROTECTION';
+            throw error;
+        }
+        return documentRoot;
     }
 
     function addStyles() {
@@ -851,6 +956,8 @@
             #${CENTRAL_ID} .ctc-config label{display:block;margin-bottom:6px;color:#fff;font-weight:800}
             #${CENTRAL_ID} .ctc-config textarea{width:100%;min-height:62px;resize:vertical;border:1px solid #3b4e69;border-radius:8px;background:#0d1626;color:#edf2fa;padding:9px 10px;outline:none;font:inherit}
             #${CENTRAL_ID} .ctc-config-actions{display:flex;flex-direction:column;justify-content:flex-end;gap:7px}
+            #${CENTRAL_ID} .ctc-auto-interval{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px}
+            #${CENTRAL_ID} .ctc-auto-interval input{width:72px;height:31px;border:1px solid #3b4e69;border-radius:7px;background:#0d1626;color:#fff;padding:0 7px}
             #${CENTRAL_ID} .ctc-tribes{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:7px}
             #${CENTRAL_ID} .ctc-tribe{display:inline-flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid #40536f;border-radius:99px;background:#101a2a;color:#dce7f5}
             #${CENTRAL_ID} .ctc-tribe button{width:21px;height:21px;border:0;border-radius:50%;background:#2d3d57;color:#ffb1b1;cursor:pointer;line-height:1}
@@ -1427,6 +1534,8 @@
         const root = document.getElementById(CENTRAL_ID);
         if (!root) return;
         const dashboard = loadDashboard();
+        const automation = loadAutomation();
+        if (automation.active && automation.intervalSeconds) centralState.autoInterval = automation.intervalSeconds;
         const allCommands = dashboardCommands(dashboard);
         const commands = filteredDashboardCommands(dashboard);
         const snapshots = Object.values(dashboard.snapshots);
@@ -1442,6 +1551,7 @@
         const nextArrival = nextTimestamp === Number.MAX_SAFE_INTEGER ? '—' : formatArrivalTimestamp(nextTimestamp);
         const scannedTargets = directory.filter(function (member) { return Boolean(dashboard.snapshots[member.playerId]); }).length;
         const scanCoverage = directory.length ? Math.round((scannedTargets / directory.length) * 100) : 0;
+        const pendingCount = pendingEnemyMembers(dashboard).length;
 
         const attackerOptions = attackers.map(function (name) {
             return `<option value="${escapeHtml(name)}"${centralState.attacker === name ? ' selected' : ''}>${escapeHtml(name)}</option>`;
@@ -1499,10 +1609,15 @@
         root.querySelector('.ctc-body').innerHTML = `
             <section class="ctc-config">
                 <div><label>Tribos inimigas monitoradas</label><textarea data-central-tribes placeholder="Informe tag, nome, ID ou link da tribo — uma por linha">${escapeHtml(centralState.tribeInput)}</textarea></div>
-                <div class="ctc-config-actions"><button class="ctc-btn primary" data-central-action="track-tribes"${centralState.busy ? ' disabled' : ''}>${centralState.busy ? 'Carregando…' : 'Carregar jogadores'}</button><button class="ctc-btn" data-central-action="next-target"${directory.length ? '' : ' disabled'}>Abrir próximo perfil</button></div>
+                <div class="ctc-config-actions">
+                    <button class="ctc-btn primary" data-central-action="track-tribes"${centralState.busy || automation.active ? ' disabled' : ''}>${centralState.busy ? 'Carregando…' : 'Carregar jogadores'}</button>
+                    <button class="ctc-btn" data-central-action="next-target"${pendingCount && !automation.active ? '' : ' disabled'}>Abrir próximo perfil</button>
+                    <label class="ctc-auto-interval">Intervalo entre perfis <input data-central-auto-interval type="number" min="${AUTO_MIN_INTERVAL_SECONDS}" step="5" value="${escapeHtml(centralState.autoInterval)}"${automation.active ? ' disabled' : ''}> segundos</label>
+                    ${automation.active ? '<button class="ctc-btn" data-central-action="pause-auto">Pausar coleta automática</button>' : `<button class="ctc-btn primary" data-central-action="start-auto"${pendingCount ? '' : ' disabled'}>Iniciar coleta automática</button>`}
+                </div>
                 ${tribeBadges ? `<div class="ctc-tribes">${tribeBadges}</div>` : ''}
             </section>
-            <div class="ctc-notice${centralState.error ? ' error' : ''}">${escapeHtml(centralState.message || 'Cadastre somente as tribos inimigas desejadas. A lista de jogadores exige poucas consultas; os comandos são coletados apenas quando você abre cada perfil inimigo. Dados com mais de 12 horas aparecem como desatualizados.')}</div>
+            <div class="ctc-notice${centralState.error ? ' error' : ''}">${escapeHtml(centralState.message || (automation.active ? 'Coleta automática ativa. Mantenha esta aba aberta; o script navegará entre os perfis respeitando o intervalo configurado.' : 'Cadastre somente as tribos inimigas desejadas. Pelo Tampermonkey, a coleta automática pode percorrer os perfis pendentes; dados com mais de 12 horas aparecem como desatualizados.'))}</div>
             <div class="ctc-stats">
                 <div class="ctc-stat"><strong>${formatNumber(trackedTribes.length)}</strong><span>Tribos inimigas</span></div>
                 <div class="ctc-stat"><strong>${formatNumber(directory.length)}</strong><span>Inimigos mapeados</span></div>
@@ -1545,6 +1660,11 @@
 
         const tribeInput = root.querySelector('[data-central-tribes]');
         if (tribeInput) tribeInput.addEventListener('input', function (event) { centralState.tribeInput = event.target.value; });
+        const intervalInput = root.querySelector('[data-central-auto-interval]');
+        if (intervalInput) intervalInput.addEventListener('change', function (event) {
+            centralState.autoInterval = Math.max(AUTO_MIN_INTERVAL_SECONDS, Number(event.target.value) || AUTO_DEFAULT_INTERVAL_SECONDS);
+            event.target.value = centralState.autoInterval;
+        });
 
         root.querySelectorAll('[data-central-filter]').forEach(function (element) {
             const eventName = element.tagName === 'INPUT' ? 'input' : 'change';
@@ -1598,6 +1718,8 @@
             if (button.dataset.centralAction === 'export') exportDashboardCsv();
             if (button.dataset.centralAction === 'track-tribes') trackEnemyTribes();
             if (button.dataset.centralAction === 'next-target') openNextEnemyProfile();
+            if (button.dataset.centralAction === 'start-auto') startAutomaticCollection();
+            if (button.dataset.centralAction === 'pause-auto') pauseAutomation('Coleta automática pausada pelo usuário.', false);
             if (button.dataset.centralAction === 'remove-tribe') {
                 const tribeId = cleanText(button.dataset.tribeId);
                 if (tribeId && window.confirm('Remover esta tribo inimiga e os dados coletados de seus jogadores da Central?')) removeTrackedTribe(tribeId);
@@ -1668,6 +1790,7 @@
             state.running = false;
             saveCurrentSnapshot();
             setStatus('Nenhuma aldeia com movimentações visíveis foi encontrada.', 'Verifique o compartilhamento dos comandos.', 100, true);
+            scheduleAutomaticContinuation();
             return;
         }
 
@@ -1686,6 +1809,11 @@
                 } catch (error) {
                     state.failures += 1;
                     console.error('[Chong Tribe Script — Ataques por Jogador]', links[index], error);
+                    if (error.code === 'BOT_PROTECTION') {
+                        state.cancelled = true;
+                        pauseAutomation(error.message, true);
+                        return;
+                    }
                 }
                 state.processed += 1;
                 const percent = Math.round((state.processed / links.length) * 100);
@@ -1701,6 +1829,13 @@
         }
 
         await Promise.all(Array.from({ length: Math.min(REQUEST_CONCURRENCY, links.length) }, worker));
+        if (!state.cancelled && state.failures === links.length) {
+            state.running = false;
+            const message = 'Todas as consultas deste perfil falharam. O perfil não foi marcado como atualizado.';
+            setStatus(message, 'Confira sua conexão ou se o Tribal Wars solicitou alguma verificação.', 100, true);
+            if (loadAutomation().active) pauseAutomation(message + ' A coleta automática foi pausada.', true);
+            return;
+        }
         const supports = state.commands.filter(function (command) { return command.kind === 'support'; });
         state.running = false;
         if (!state.cancelled) saveCurrentSnapshot();
@@ -1716,11 +1851,19 @@
                 100,
                 state.commands.length === 0
             );
+            scheduleAutomaticContinuation();
         }
     }
 
     function init() {
         const screen = String(window.game_data?.screen || new URLSearchParams(window.location.search).get('screen') || '');
+        if (/protecao contra bots|bot protection/.test(normalize(document.body?.textContent)) && loadAutomation().active) {
+            addStyles();
+            addCentralStyles();
+            pauseAutomation('Proteção contra bots detectada. A coleta automática foi pausada; conclua a verificação antes de continuar.', true);
+            openDashboard();
+            return;
+        }
         if (screen !== 'info_player') return;
         addStyles();
         addCentralStyles();
