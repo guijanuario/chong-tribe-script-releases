@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.3.0
-// @description  Analisa movimentações compartilhadas por jogador e mantém uma central local da tribo com o histórico das consultas.
+// @version      1.4.0
+// @description  Analisa ataques compartilhados nos perfis inimigos e mantém uma central local focada nas tribos adversárias escolhidas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
 // @run-at       document-idle
@@ -65,6 +65,10 @@
         attacker: 'all',
         victim: 'all',
         type: 'all',
+        tribeInput: '',
+        busy: false,
+        message: '',
+        error: false,
     };
 
     function cleanText(value) {
@@ -147,6 +151,7 @@
             updatedAt: 0,
             directory: {},
             snapshots: {},
+            trackedTribes: {},
         };
     }
 
@@ -156,6 +161,7 @@
             if (!parsed || parsed.version !== DASHBOARD_STORAGE_VERSION) return emptyDashboard();
             parsed.directory = parsed.directory && typeof parsed.directory === 'object' ? parsed.directory : {};
             parsed.snapshots = parsed.snapshots && typeof parsed.snapshots === 'object' ? parsed.snapshots : {};
+            parsed.trackedTribes = parsed.trackedTribes && typeof parsed.trackedTribes === 'object' ? parsed.trackedTribes : {};
             return parsed;
         } catch (_error) {
             return emptyDashboard();
@@ -202,15 +208,19 @@
         const playerId = currentProfileId();
         const dashboard = loadDashboard();
         const profileUrl = window.location.href;
-        dashboard.directory[playerId] = {
+        const existing = dashboard.directory[playerId] || {};
+        dashboard.directory[playerId] = Object.assign({}, existing, {
             playerId: playerId,
             playerName: state.playerName,
             profileUrl: profileUrl,
-        };
+        });
         dashboard.snapshots[playerId] = {
             playerId: playerId,
             playerName: state.playerName,
             profileUrl: profileUrl,
+            tribeId: existing.tribeId || '',
+            tribeName: existing.tribeName || '',
+            tribeTag: existing.tribeTag || '',
             capturedAt: Date.now(),
             villageCount: state.villages.length,
             commands: state.commands.map(serializableCommand),
@@ -232,6 +242,182 @@
         });
         if (found) saveDashboard(dashboard);
         return found;
+    }
+
+    function decodeMapField(value) {
+        try {
+            return decodeURIComponent(String(value || '').replace(/\+/g, ' '));
+        } catch (_error) {
+            return String(value || '').replace(/\+/g, ' ');
+        }
+    }
+
+    function parseTribeReference(value) {
+        const reference = cleanText(value);
+        if (!reference) return { id: '', label: '' };
+        if (/^\d+$/.test(reference)) return { id: reference, label: reference };
+        try {
+            const url = new URL(reference, window.location.origin);
+            const id = cleanText(url.searchParams.get('id'));
+            if (id && /screen=info_ally/.test(url.search)) return { id: id, label: reference };
+        } catch (_error) {
+            // O valor pode ser o nome ou a tag da tribo.
+        }
+        return { id: '', label: reference };
+    }
+
+    async function loadAllyMap() {
+        const response = await window.fetch(new URL('/map/ally.txt', window.location.origin).toString(), {
+            credentials: 'same-origin',
+        });
+        if (!response.ok) throw new Error('Não foi possível consultar a lista pública de tribos (HTTP ' + response.status + ').');
+        const text = await response.text();
+        return text.split(/\r?\n/).filter(Boolean).map(function (line) {
+            const columns = line.split(',');
+            return {
+                id: cleanText(columns[0]),
+                name: decodeMapField(columns[1]),
+                tag: decodeMapField(columns[2]),
+            };
+        });
+    }
+
+    function tribeInfoUrl(tribeId) {
+        const url = new URL('/game.php', window.location.origin);
+        const currentVillage = cleanText(window.game_data?.village?.id || new URLSearchParams(window.location.search).get('village'));
+        if (currentVillage) url.searchParams.set('village', currentVillage);
+        url.searchParams.set('screen', 'info_ally');
+        url.searchParams.set('id', tribeId);
+        return url.toString();
+    }
+
+    async function fetchEnemyTribe(tribe) {
+        const url = tribeInfoUrl(tribe.id);
+        const documentRoot = await fetchDocument(url);
+        const pageText = normalize(documentRoot.body?.textContent);
+        if (/protecao contra bots|bot protection/.test(pageText)) {
+            throw new Error('O Tribal Wars solicitou verificação contra bots. Pare a coleta e conclua a verificação antes de continuar.');
+        }
+        const members = new Map();
+        documentRoot.querySelectorAll('a[href*="screen=info_player"][href*="id="]').forEach(function (anchor) {
+            const profileUrl = gameUrl(anchor.getAttribute('href'));
+            const playerId = profileUrl ? cleanText(new URL(profileUrl).searchParams.get('id')) : '';
+            const playerName = cleanText(anchor.textContent);
+            if (playerId && playerName) members.set(playerId, { playerId: playerId, playerName: playerName, profileUrl: profileUrl });
+        });
+        if (!members.size) throw new Error('Nenhum jogador foi encontrado na página da tribo ' + (tribe.tag || tribe.name || tribe.id) + '.');
+        const heading = cleanText(documentRoot.querySelector('#content_value h2, h2')?.textContent);
+        return {
+            id: tribe.id,
+            name: tribe.name || heading || tribe.label || ('Tribo ' + tribe.id),
+            tag: tribe.tag || tribe.label || heading || tribe.id,
+            profileUrl: url,
+            capturedAt: Date.now(),
+            memberCount: members.size,
+            members: Array.from(members.values()),
+        };
+    }
+
+    async function trackEnemyTribes() {
+        if (centralState.busy) return;
+        const references = centralState.tribeInput.split(/\r?\n|;/).map(cleanText).filter(Boolean);
+        if (!references.length) {
+            centralState.message = 'Informe pelo menos uma tag, nome, ID ou link de tribo inimiga.';
+            centralState.error = true;
+            renderDashboard();
+            return;
+        }
+        centralState.busy = true;
+        centralState.error = false;
+        centralState.message = 'Localizando as tribos informadas…';
+        renderDashboard();
+        try {
+            const parsed = references.map(parseTribeReference);
+            const needsLookup = parsed.some(function (tribe) { return !tribe.id; });
+            const allyMap = needsLookup ? await loadAllyMap() : [];
+            const resolved = parsed.map(function (tribe) {
+                if (tribe.id) return tribe;
+                const wanted = normalize(tribe.label);
+                const match = allyMap.find(function (item) {
+                    return normalize(item.tag) === wanted || normalize(item.name) === wanted;
+                });
+                if (!match) throw new Error('Tribo não encontrada: ' + tribe.label + '. Confira a tag/nome ou cole o link do perfil da tribo.');
+                return Object.assign({}, match, { label: tribe.label });
+            });
+            const dashboard = loadDashboard();
+            for (let index = 0; index < resolved.length; index += 1) {
+                centralState.message = 'Carregando jogadores de ' + (resolved[index].tag || resolved[index].name || resolved[index].id) + '…';
+                renderDashboard();
+                const tribe = await fetchEnemyTribe(resolved[index]);
+                Object.values(dashboard.directory).forEach(function (member) {
+                    if (member.tribeId === tribe.id) member.active = false;
+                });
+                tribe.members.forEach(function (member) {
+                    dashboard.directory[member.playerId] = Object.assign({}, dashboard.directory[member.playerId] || {}, member, {
+                        tribeId: tribe.id,
+                        tribeName: tribe.name,
+                        tribeTag: tribe.tag,
+                        active: true,
+                    });
+                    if (dashboard.snapshots[member.playerId]) {
+                        dashboard.snapshots[member.playerId].tribeId = tribe.id;
+                        dashboard.snapshots[member.playerId].tribeName = tribe.name;
+                        dashboard.snapshots[member.playerId].tribeTag = tribe.tag;
+                    }
+                });
+                dashboard.trackedTribes[tribe.id] = {
+                    id: tribe.id,
+                    name: tribe.name,
+                    tag: tribe.tag,
+                    profileUrl: tribe.profileUrl,
+                    capturedAt: tribe.capturedAt,
+                    memberCount: tribe.memberCount,
+                };
+                if (index + 1 < resolved.length) await requestPause();
+            }
+            saveDashboard(dashboard);
+            centralState.tribeInput = '';
+            centralState.message = resolved.length + ' tribo(s) inimiga(s) atualizada(s). Abra os perfis pendentes para coletar os comandos compartilhados.';
+        } catch (error) {
+            centralState.message = error.message || 'Não foi possível carregar as tribos inimigas.';
+            centralState.error = true;
+        } finally {
+            centralState.busy = false;
+            renderDashboard();
+        }
+    }
+
+    function removeTrackedTribe(tribeId) {
+        const dashboard = loadDashboard();
+        delete dashboard.trackedTribes[tribeId];
+        Object.keys(dashboard.directory).forEach(function (playerId) {
+            if (dashboard.directory[playerId].tribeId === tribeId) delete dashboard.directory[playerId];
+        });
+        Object.keys(dashboard.snapshots).forEach(function (playerId) {
+            if (dashboard.snapshots[playerId].tribeId === tribeId) delete dashboard.snapshots[playerId];
+        });
+        saveDashboard(dashboard);
+        renderDashboard();
+    }
+
+    function openNextEnemyProfile() {
+        const dashboard = loadDashboard();
+        const members = Object.values(dashboard.directory).filter(function (member) {
+            if (member.active === false) return false;
+            const snapshot = dashboard.snapshots[member.playerId];
+            return !snapshot || Date.now() - snapshot.capturedAt > SNAPSHOT_STALE_MS;
+        }).sort(function (a, b) {
+            const aTime = dashboard.snapshots[a.playerId]?.capturedAt || 0;
+            const bTime = dashboard.snapshots[b.playerId]?.capturedAt || 0;
+            return aTime - bTime || a.playerName.localeCompare(b.playerName, 'pt-BR');
+        });
+        if (!members.length) {
+            centralState.message = 'Todos os jogadores cadastrados têm uma consulta recente.';
+            centralState.error = false;
+            renderDashboard();
+            return;
+        }
+        window.open(members[0].profileUrl, '_blank', 'noopener,noreferrer');
     }
 
     function hasAttackMarker(row) {
@@ -660,6 +846,14 @@
             #${CENTRAL_ID} .ctc-btn.primary{background:#0f8f7c;border-color:#16c6a3}
             #${CENTRAL_ID} .ctc-body{flex:1;min-height:0;overflow:auto;padding:15px 20px 20px}
             #${CENTRAL_ID} .ctc-notice{margin-bottom:12px;padding:10px 12px;border:1px solid rgba(22,198,163,.38);border-radius:10px;background:rgba(22,198,163,.09);color:#bff7ea;line-height:1.45}
+            #${CENTRAL_ID} .ctc-notice.error{border-color:rgba(240,82,82,.55);background:rgba(240,82,82,.10);color:#ffb5b5}
+            #${CENTRAL_ID} .ctc-config{display:grid;grid-template-columns:minmax(280px,1fr) auto;gap:9px;margin-bottom:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,#17243a,#111a2a)}
+            #${CENTRAL_ID} .ctc-config label{display:block;margin-bottom:6px;color:#fff;font-weight:800}
+            #${CENTRAL_ID} .ctc-config textarea{width:100%;min-height:62px;resize:vertical;border:1px solid #3b4e69;border-radius:8px;background:#0d1626;color:#edf2fa;padding:9px 10px;outline:none;font:inherit}
+            #${CENTRAL_ID} .ctc-config-actions{display:flex;flex-direction:column;justify-content:flex-end;gap:7px}
+            #${CENTRAL_ID} .ctc-tribes{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:7px}
+            #${CENTRAL_ID} .ctc-tribe{display:inline-flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid #40536f;border-radius:99px;background:#101a2a;color:#dce7f5}
+            #${CENTRAL_ID} .ctc-tribe button{width:21px;height:21px;border:0;border-radius:50%;background:#2d3d57;color:#ffb1b1;cursor:pointer;line-height:1}
             #${CENTRAL_ID} .ctc-stats{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:9px;margin-bottom:12px}
             #${CENTRAL_ID} .ctc-stat{padding:12px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(145deg,var(--panel2),#121b2b)}
             #${CENTRAL_ID} .ctc-stat strong{display:block;font-size:21px;color:#fff;line-height:1.1;margin-bottom:4px}
@@ -690,7 +884,7 @@
             #${CENTRAL_ID} .ctc-coverage{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:7px;padding:11px}
             #${CENTRAL_ID} .ctc-member{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;border:1px solid #33445f;border-radius:8px;background:#111a2a}
             #${CENTRAL_ID} .ctc-member small{display:block;color:var(--muted);margin-top:3px}
-            @media(max-width:920px){#${CENTRAL_ID} .ctc-stats{grid-template-columns:repeat(2,1fr)}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr 1fr}#${CENTRAL_ID} .ctc-force{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-head-actions .ctc-btn{display:none}}
+            @media(max-width:920px){#${CENTRAL_ID} .ctc-stats{grid-template-columns:repeat(2,1fr)}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr 1fr}#${CENTRAL_ID} .ctc-force{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-config{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-config-actions{flex-direction:row}#${CENTRAL_ID} .ctc-head-actions .ctc-btn{display:none}}
             @media(max-width:560px){#${CENTRAL_ID}-overlay{padding:0}#${CENTRAL_ID}{width:100vw;height:100vh;border-radius:0}#${CENTRAL_ID} .ctc-body,#${CENTRAL_ID} .ctc-head{padding-left:11px;padding-right:11px}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr}#${SCRIPT_ID} .cts-head-actions .cts-btn{display:none}}
         `;
         document.head.appendChild(style);
@@ -1188,9 +1382,12 @@
             (snapshot.commands || []).forEach(function (command) {
                 if (command.kind !== 'attack') return;
                 commands.push(Object.assign({}, command, {
-                    victimPlayerId: snapshot.playerId,
-                    victimPlayerName: snapshot.playerName,
-                    victimProfileUrl: snapshot.profileUrl,
+                    targetPlayerId: snapshot.playerId,
+                    targetPlayerName: snapshot.playerName,
+                    targetProfileUrl: snapshot.profileUrl,
+                    targetTribeId: snapshot.tribeId || '',
+                    targetTribeName: snapshot.tribeName || '',
+                    targetTribeTag: snapshot.tribeTag || '',
                     capturedAt: snapshot.capturedAt,
                 }));
             });
@@ -1202,13 +1399,13 @@
         const query = normalize(centralState.search);
         return dashboardCommands(dashboard).filter(function (command) {
             if (centralState.attacker !== 'all' && command.player !== centralState.attacker) return false;
-            if (centralState.victim !== 'all' && command.victimPlayerId !== centralState.victim) return false;
+            if (centralState.victim !== 'all' && command.targetPlayerId !== centralState.victim) return false;
             if (centralState.type === 'noble' && !command.noble) return false;
             if (centralState.type !== 'all' && centralState.type !== 'noble' && command.type !== centralState.type) return false;
             if (!query) return true;
             return normalize([
                 command.player,
-                command.victimPlayerName,
+                command.targetPlayerName,
                 command.villageName,
                 command.villageCoordinate,
                 command.name,
@@ -1233,28 +1430,35 @@
         const allCommands = dashboardCommands(dashboard);
         const commands = filteredDashboardCommands(dashboard);
         const snapshots = Object.values(dashboard.snapshots);
-        const directory = Object.values(dashboard.directory);
+        const directory = Object.values(dashboard.directory).filter(function (member) { return member.active !== false; });
+        const trackedTribes = Object.values(dashboard.trackedTribes).sort(function (a, b) {
+            return (a.tag || a.name).localeCompare(b.tag || b.name, 'pt-BR');
+        });
         const attackers = uniqueSorted(allCommands.map(function (command) { return command.player; }));
-        const victims = directory.slice().sort(function (a, b) { return a.playerName.localeCompare(b.playerName, 'pt-BR'); });
-        const attackedMembers = new Set(commands.map(function (command) { return command.victimPlayerId; })).size;
+        const targets = directory.slice().sort(function (a, b) { return a.playerName.localeCompare(b.playerName, 'pt-BR'); });
+        const attackedTargets = new Set(commands.map(function (command) { return command.targetPlayerId; })).size;
         const attackingPlayers = new Set(commands.map(function (command) { return command.player; })).size;
         const nextTimestamp = soonestTimestamp(commands);
         const nextArrival = nextTimestamp === Number.MAX_SAFE_INTEGER ? '—' : formatArrivalTimestamp(nextTimestamp);
-        const scanCoverage = directory.length ? Math.round((snapshots.length / directory.length) * 100) : 0;
+        const scannedTargets = directory.filter(function (member) { return Boolean(dashboard.snapshots[member.playerId]); }).length;
+        const scanCoverage = directory.length ? Math.round((scannedTargets / directory.length) * 100) : 0;
 
         const attackerOptions = attackers.map(function (name) {
             return `<option value="${escapeHtml(name)}"${centralState.attacker === name ? ' selected' : ''}>${escapeHtml(name)}</option>`;
         }).join('');
-        const victimOptions = victims.map(function (member) {
+        const targetOptions = targets.map(function (member) {
             return `<option value="${escapeHtml(member.playerId)}"${centralState.victim === member.playerId ? ' selected' : ''}>${escapeHtml(member.playerName)}</option>`;
+        }).join('');
+        const tribeBadges = trackedTribes.map(function (tribe) {
+            return `<span class="ctc-tribe"><a href="${escapeHtml(tribe.profileUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(tribe.tag || tribe.name)}</strong></a><span>${formatNumber(tribe.memberCount)} jogador(es)</span><button data-central-action="remove-tribe" data-tribe-id="${escapeHtml(tribe.id)}" title="Remover tribo">×</button></span>`;
         }).join('');
 
         const byAttacker = Array.from(groupCommands(commands, function (command) { return command.player; }))
             .sort(function (a, b) { return b[1].length - a[1].length || a[0].localeCompare(b[0], 'pt-BR'); });
         const attackerRows = byAttacker.map(function (entry) {
             const playerCommands = entry[1];
-            const targetPlayers = new Set(playerCommands.map(function (command) { return command.victimPlayerId; })).size;
-            const targetVillages = new Set(playerCommands.map(function (command) { return command.victimPlayerId + ':' + (command.villageId || command.villageCoordinate); })).size;
+            const targetPlayers = new Set(playerCommands.map(function (command) { return command.targetPlayerId; })).size;
+            const targetVillages = new Set(playerCommands.map(function (command) { return command.targetPlayerId + ':' + (command.villageId || command.villageCoordinate); })).size;
             const closest = soonestTimestamp(playerCommands);
             return `<tr>
                 <td><strong>${escapeHtml(entry[0])}</strong></td>
@@ -1275,29 +1479,36 @@
             return `<tr>
                 <td><strong>${escapeHtml(command.player)}</strong>${command.own ? ' <span class="ctc-fresh">Você</span>' : ''}</td>
                 <td><span class="ctc-type"><img src="${TYPE_ICONS[command.type]}" alt="">${escapeHtml(centralTypeLabel(command))}</span></td>
-                <td><a href="${escapeHtml(command.victimProfileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(command.victimPlayerName)}</a></td>
-                <td><a href="${escapeHtml(command.villageUrl || command.victimProfileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(command.villageCoordinate || command.villageName)}</a></td>
+                <td>${escapeHtml(command.targetTribeTag || command.targetTribeName || 'Não cadastrada')}</td>
+                <td><a href="${escapeHtml(command.targetProfileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(command.targetPlayerName)}</a></td>
+                <td><a href="${escapeHtml(command.villageUrl || command.targetProfileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(command.villageCoordinate || command.villageName)}</a></td>
                 <td>${escapeHtml(command.arrival || 'Horário não disponível')}</td>
                 <td class="${stale ? 'ctc-stale' : 'ctc-fresh'}">${escapeHtml(formatAge(command.capturedAt))}</td>
             </tr>`;
         }).join('');
 
-        const members = Object.values(Object.assign({}, dashboard.directory));
-        const coverageRows = members.sort(function (a, b) { return a.playerName.localeCompare(b.playerName, 'pt-BR'); }).map(function (member) {
+        const coverageRows = directory.sort(function (a, b) {
+            return (a.tribeTag || '').localeCompare(b.tribeTag || '', 'pt-BR') || a.playerName.localeCompare(b.playerName, 'pt-BR');
+        }).map(function (member) {
             const snapshot = dashboard.snapshots[member.playerId];
             const stale = snapshot && Date.now() - snapshot.capturedAt > SNAPSHOT_STALE_MS;
             const label = snapshot ? (stale ? 'Desatualizado · ' : 'Atualizado · ') + formatAge(snapshot.capturedAt) : 'Ainda não consultado';
-            return `<div class="ctc-member"><div><a href="${escapeHtml(member.profileUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(member.playerName)}</strong></a><small class="${snapshot ? (stale ? 'ctc-stale' : 'ctc-fresh') : ''}">${escapeHtml(label)}</small></div><span>${snapshot ? formatNumber((snapshot.commands || []).filter(function (command) { return command.kind === 'attack'; }).length) : '—'}</span></div>`;
+            return `<div class="ctc-member"><div><a href="${escapeHtml(member.profileUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(member.playerName)}</strong></a><small>${escapeHtml(member.tribeTag || member.tribeName || 'Alvo avulso')}</small><small class="${snapshot ? (stale ? 'ctc-stale' : 'ctc-fresh') : ''}">${escapeHtml(label)}</small></div><span>${snapshot ? formatNumber((snapshot.commands || []).filter(function (command) { return command.kind === 'attack'; }).length) : '—'}</span></div>`;
         }).join('');
 
         root.querySelector('.ctc-body').innerHTML = `
-            <div class="ctc-notice">A Central reúne somente os perfis que você já abriu. Ela não consulta todos os membros em segundo plano: isso reduz requisições e evita acionar a proteção contra bots. Dados com mais de 12 horas aparecem como desatualizados.</div>
+            <section class="ctc-config">
+                <div><label>Tribos inimigas monitoradas</label><textarea data-central-tribes placeholder="Informe tag, nome, ID ou link da tribo — uma por linha">${escapeHtml(centralState.tribeInput)}</textarea></div>
+                <div class="ctc-config-actions"><button class="ctc-btn primary" data-central-action="track-tribes"${centralState.busy ? ' disabled' : ''}>${centralState.busy ? 'Carregando…' : 'Carregar jogadores'}</button><button class="ctc-btn" data-central-action="next-target"${directory.length ? '' : ' disabled'}>Abrir próximo perfil</button></div>
+                ${tribeBadges ? `<div class="ctc-tribes">${tribeBadges}</div>` : ''}
+            </section>
+            <div class="ctc-notice${centralState.error ? ' error' : ''}">${escapeHtml(centralState.message || 'Cadastre somente as tribos inimigas desejadas. A lista de jogadores exige poucas consultas; os comandos são coletados apenas quando você abre cada perfil inimigo. Dados com mais de 12 horas aparecem como desatualizados.')}</div>
             <div class="ctc-stats">
-                <div class="ctc-stat"><strong>${formatNumber(snapshots.length)}</strong><span>Jogadores consultados</span></div>
-                <div class="ctc-stat"><strong>${formatNumber(directory.length)}</strong><span>Membros identificados</span></div>
-                <div class="ctc-stat"><strong>${formatNumber(attackedMembers)}</strong><span>Membros sob ataque</span></div>
-                <div class="ctc-stat"><strong>${formatNumber(commands.length)}</strong><span>Ataques visíveis</span></div>
-                <div class="ctc-stat"><strong>${formatNumber(attackingPlayers)}</strong><span>Inimigos atacando</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(trackedTribes.length)}</strong><span>Tribos inimigas</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(directory.length)}</strong><span>Inimigos mapeados</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(scannedTargets)}</strong><span>Perfis consultados</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(attackedTargets)}</strong><span>Inimigos com ataques</span></div>
+                <div class="ctc-stat"><strong>${formatNumber(attackingPlayers)}</strong><span>Membros nossos atacando</span></div>
                 <div class="ctc-stat"><strong style="font-size:${nextArrival === '—' ? '21px' : '14px'}">${escapeHtml(nextArrival)}</strong><span>Próxima chegada</span></div>
             </div>
             <div class="ctc-force">
@@ -1306,9 +1517,9 @@
                 <div class="ctc-force-card" style="--color:#39b86b"><strong>${formatNumber(countByType(commands, 'small'))}</strong><span>Machados verdes</span></div>
             </div>
             <div class="ctc-toolbar">
-                <input class="ctc-input" data-central-filter="search" type="search" value="${escapeHtml(centralState.search)}" placeholder="Buscar atacante, membro, aldeia ou coordenada…">
-                <select class="ctc-select" data-central-filter="attacker"><option value="all">Todos os atacantes</option>${attackerOptions}</select>
-                <select class="ctc-select" data-central-filter="victim"><option value="all">Todos os membros</option>${victimOptions}</select>
+                <input class="ctc-input" data-central-filter="search" type="search" value="${escapeHtml(centralState.search)}" placeholder="Buscar membro atacante, inimigo ou coordenada…">
+                <select class="ctc-select" data-central-filter="attacker"><option value="all">Todos os membros atacantes</option>${attackerOptions}</select>
+                <select class="ctc-select" data-central-filter="victim"><option value="all">Todos os inimigos</option>${targetOptions}</select>
                 <select class="ctc-select" data-central-filter="type">
                     <option value="all"${centralState.type === 'all' ? ' selected' : ''}>Todos os tipos</option>
                     <option value="noble"${centralState.type === 'noble' ? ' selected' : ''}>Possíveis nobres</option>
@@ -1319,18 +1530,21 @@
                 <button class="ctc-btn" data-central-action="export"${commands.length ? '' : ' disabled'}>Exportar CSV</button>
             </div>
             <section class="ctc-section">
-                <div class="ctc-section-head"><div><div class="ctc-section-title">Quem está atacando a tribo</div><div class="ctc-section-note">Panorama consolidado dos perfis já consultados</div></div><span>${formatNumber(byAttacker.length)} atacante(s)</span></div>
-                ${attackerRows ? `<div class="ctc-scroll"><table><thead><tr><th>Jogador</th><th>Vermelhos</th><th>Marrons</th><th>Verdes</th><th>Nobres</th><th>Membros</th><th>Alvos</th><th>Próxima chegada</th><th>Total</th></tr></thead><tbody>${attackerRows}</tbody></table></div>` : '<div class="ctc-empty">Nenhum ataque corresponde aos filtros atuais.</div>'}
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Membros da sua tribo atacando</div><div class="ctc-section-note">Os nomes vêm dos comandos compartilhados encontrados nos perfis inimigos</div></div><span>${formatNumber(byAttacker.length)} jogador(es)</span></div>
+                ${attackerRows ? `<div class="ctc-scroll"><table><thead><tr><th>Membro atacante</th><th>Vermelhos</th><th>Marrons</th><th>Verdes</th><th>Nobres</th><th>Inimigos</th><th>Aldeias-alvo</th><th>Próxima chegada</th><th>Total</th></tr></thead><tbody>${attackerRows}</tbody></table></div>` : '<div class="ctc-empty">Nenhum ataque compartilhado foi encontrado nos perfis inimigos consultados.</div>'}
             </section>
             <section class="ctc-section">
-                <div class="ctc-section-head"><div><div class="ctc-section-title">Movimentações consolidadas</div><div class="ctc-section-note">Atacante, alvo, horário e idade da última consulta</div></div><span>${formatNumber(commands.length)} comando(s)</span></div>
-                ${movementRows ? `<div class="ctc-scroll"><table><thead><tr><th>Atacante</th><th>Tipo</th><th>Membro atacado</th><th>Aldeia</th><th>Chegada</th><th>Coletado</th></tr></thead><tbody>${movementRows}</tbody></table></div>` : '<div class="ctc-empty">Nenhuma movimentação disponível.</div>'}
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Ataques compartilhados consolidados</div><div class="ctc-section-note">Membro atacante, tribo inimiga, alvo e horário</div></div><span>${formatNumber(commands.length)} comando(s)</span></div>
+                ${movementRows ? `<div class="ctc-scroll"><table><thead><tr><th>Membro atacante</th><th>Tipo</th><th>Tribo inimiga</th><th>Jogador inimigo</th><th>Aldeia-alvo</th><th>Chegada</th><th>Coletado</th></tr></thead><tbody>${movementRows}</tbody></table></div>` : '<div class="ctc-empty">Nenhuma movimentação disponível.</div>'}
             </section>
             <section class="ctc-section">
-                <div class="ctc-section-head"><div><div class="ctc-section-title">Cobertura dos membros</div><div class="ctc-section-note">Abra a página “Membros” da tribo uma vez para preencher o diretório; depois visite os perfis pendentes</div></div><span>${directory.length ? scanCoverage + '%' : 'Diretório vazio'}</span></div>
-                ${coverageRows ? `<div class="ctc-coverage">${coverageRows}</div>` : '<div class="ctc-empty">Nenhum membro identificado. Abra a lista de membros da tribo e execute o script nessa página.</div>'}
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Cobertura dos perfis inimigos</div><div class="ctc-section-note">Clique em “Abrir próximo perfil”; o userscript coleta somente aquele jogador</div></div><span>${directory.length ? scanCoverage + '%' : 'Nenhuma tribo cadastrada'}</span></div>
+                ${coverageRows ? `<div class="ctc-coverage">${coverageRows}</div>` : '<div class="ctc-empty">Cadastre uma ou mais tribos inimigas acima para montar a fila de consulta.</div>'}
             </section>
         `;
+
+        const tribeInput = root.querySelector('[data-central-tribes]');
+        if (tribeInput) tribeInput.addEventListener('input', function (event) { centralState.tribeInput = event.target.value; });
 
         root.querySelectorAll('[data-central-filter]').forEach(function (element) {
             const eventName = element.tagName === 'INPUT' ? 'input' : 'change';
@@ -1348,9 +1562,9 @@
 
     function exportDashboardCsv() {
         const dashboard = loadDashboard();
-        const rows = [['Atacante', 'Membro atacado', 'Aldeia', 'Coordenada', 'Tipo', 'Possível nobre', 'Chegada', 'Coletado em']]
+        const rows = [['Membro atacante', 'Tribo inimiga', 'Jogador inimigo', 'Aldeia-alvo', 'Coordenada', 'Tipo', 'Possível nobre', 'Chegada', 'Coletado em']]
             .concat(filteredDashboardCommands(dashboard).map(function (command) {
-                return [command.player, command.victimPlayerName, command.villageName, command.villageCoordinate, TYPE_LABELS[command.type], command.noble ? 'Sim' : 'Não', command.arrival, formatArrivalTimestamp(command.capturedAt)];
+                return [command.player, command.targetTribeTag || command.targetTribeName, command.targetPlayerName, command.villageName, command.villageCoordinate, TYPE_LABELS[command.type], command.noble ? 'Sim' : 'Não', command.arrival, formatArrivalTimestamp(command.capturedAt)];
             }));
         const csv = '\uFEFF' + rows.map(function (row) { return row.map(csvCell).join(';'); }).join('\r\n');
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -1370,7 +1584,7 @@
         overlay.innerHTML = `
             <section id="${CENTRAL_ID}" role="dialog" aria-modal="true" aria-label="Central de comandos da tribo">
                 <header class="ctc-head">
-                    <div class="ctc-brand"><div class="ctc-logo">CTS</div><div><h2>Central de ataques da tribo</h2><div class="ctc-subtitle">${escapeHtml(worldId().toUpperCase())} · dados salvos neste navegador${dashboard.updatedAt ? ' · última alteração ' + escapeHtml(formatAge(dashboard.updatedAt)) : ''}</div></div></div>
+                    <div class="ctc-brand"><div class="ctc-logo">CTS</div><div><h2>Central de ataques compartilhados</h2><div class="ctc-subtitle">${escapeHtml(worldId().toUpperCase())} · nossa tribo atacando os inimigos monitorados · dados salvos neste navegador${dashboard.updatedAt ? ' · última alteração ' + escapeHtml(formatAge(dashboard.updatedAt)) : ''}</div></div></div>
                     <div class="ctc-head-actions"><button class="ctc-btn primary" data-central-action="refresh">Atualizar painel</button><button class="ctc-close" data-central-action="close" title="Fechar">×</button></div>
                 </header>
                 <main class="ctc-body"></main>
@@ -1382,6 +1596,12 @@
             if (button.dataset.centralAction === 'close') overlay.remove();
             if (button.dataset.centralAction === 'refresh') renderDashboard();
             if (button.dataset.centralAction === 'export') exportDashboardCsv();
+            if (button.dataset.centralAction === 'track-tribes') trackEnemyTribes();
+            if (button.dataset.centralAction === 'next-target') openNextEnemyProfile();
+            if (button.dataset.centralAction === 'remove-tribe') {
+                const tribeId = cleanText(button.dataset.tribeId);
+                if (tribeId && window.confirm('Remover esta tribo inimiga e os dados coletados de seus jogadores da Central?')) removeTrackedTribe(tribeId);
+            }
         });
         renderDashboard();
     }
@@ -1501,14 +1721,6 @@
 
     function init() {
         const screen = String(window.game_data?.screen || new URLSearchParams(window.location.search).get('screen') || '');
-        const mode = String(new URLSearchParams(window.location.search).get('mode') || '');
-        if (screen === 'ally' && mode === 'members') {
-            addStyles();
-            addCentralStyles();
-            captureMemberDirectory();
-            openDashboard();
-            return;
-        }
         if (screen !== 'info_player') return;
         addStyles();
         addCentralStyles();
