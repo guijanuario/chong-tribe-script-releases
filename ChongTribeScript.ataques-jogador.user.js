@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.4.0
+// @version      1.4.1
 // @description  Analisa ataques compartilhados nos perfis inimigos e mantém uma central local focada nas tribos adversárias escolhidas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -16,7 +16,7 @@
 
     const SCRIPT_ID = 'cts-ataques-jogador';
     const CENTRAL_ID = 'cts-central-comandos-tribo';
-    const DASHBOARD_STORAGE_VERSION = 1;
+    const DASHBOARD_STORAGE_VERSION = 2;
     const SNAPSHOT_STALE_MS = 12 * 60 * 60 * 1000;
     const REQUEST_DELAY_MS = 1400;
     const REQUEST_JITTER_MS = 700;
