@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.1.1
+// @version      4.1.2
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -333,10 +333,17 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         /* ===== CONTAINER PRINCIPAL ===== */
         .tw-tamper-container {
             position: fixed;
-            bottom: 60px;
+            top: 8px;
+            bottom: 8px;
             left: 20px;
             z-index: 9999;
             font-family: 'Segoe UI', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: flex-start;
+            gap: 8px;
+            pointer-events: none;
         }
 
         /* ===== ÍCONE PRINCIPAL ===== */
@@ -356,6 +363,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
             border: 2px solid #4a4d52;
             position: relative;
+            order: 2;
+            flex: 0 0 auto;
+            pointer-events: auto;
         }
 
         .tw-config-icon::before {
@@ -416,8 +426,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         /* ===== SUBMENU ===== */
         .tw-submenu {
-            position: absolute;
-            bottom: 65px;
+            position: relative;
+            bottom: auto;
             left: 0;
             background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
             border-radius: 16px;
@@ -435,6 +445,20 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             display: flex;
             flex-direction: column;
             gap: 8px;
+            order: 1;
+            flex: 0 1 auto;
+            pointer-events: auto;
+        }
+
+        @media (max-height: 850px) {
+            .tw-submenu { gap: 4px; padding: 8px; border-radius: 13px; }
+            .tw-submenu-item { width: 42px; height: 42px; border-radius: 10px; }
+            .tw-submenu-item-icon { font-size: 20px; }
+            .tw-config-icon { width: 50px; height: 50px; }
+        }
+
+        @media (max-height: 680px) {
+            .tw-submenu { max-height: calc(100vh - 82px); overflow-y: auto; overflow-x: hidden; }
         }
 
         .tw-submenu.show {
@@ -3176,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.34.1', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.34.2', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3230,8 +3254,18 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 html.cts-malboa-tribe-integrated .cba-launcher{display:none!important}
                 #${ENTRY_ID} .tw-submenu-item-icon{display:grid;place-items:center;width:100%;height:100%;font-size:23px}
                 #${ENTRY_ID}.cts-tribe-ready{border-color:#27ae78;box-shadow:0 0 10px rgba(39,174,120,.48)}
+                #${ENTRY_ID}:hover{background:linear-gradient(135deg,#43b581 0%,#2d8659 100%)!important;border-color:#7dcea0!important;color:#fff!important;box-shadow:0 4px 15px rgba(67,181,129,.5)!important}
             `;
             document.head.appendChild(style);
+        }
+
+        function positionEntry(submenu, entry) {
+            const settings = submenu.querySelector('.tw-submenu-item[data-action="openSettings"]');
+            if (settings) {
+                if (entry.nextElementSibling !== settings) submenu.insertBefore(entry, settings);
+                return;
+            }
+            if (submenu.lastElementChild !== entry) submenu.appendChild(entry);
         }
 
         function readiness(entry) {
@@ -3249,7 +3283,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function integrate() {
             if (typeof document === 'undefined' || !document.documentElement) return;
             const submenu = document.querySelector('.tw-submenu');
-            if (!submenu || document.getElementById(ENTRY_ID)) return;
+            if (!submenu) return;
+            const existingEntry = document.getElementById(ENTRY_ID);
+            if (existingEntry) {
+                positionEntry(submenu, existingEntry);
+                return;
+            }
             injectStyles();
             document.documentElement.classList.add('cts-malboa-tribe-integrated');
 
@@ -3266,6 +3305,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             });
             readiness(entry);
             submenu.appendChild(entry);
+            positionEntry(submenu, entry);
         }
 
         integrate();
