@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.1.2
+// @version      4.2.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.34.2', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.35.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3321,11 +3321,14 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         'use strict';
 
         const SCRIPT_ID = 'chong-tribe-blind-assistant';
-        const MODULE_VERSION = '1.0.1';
+        const MODULE_VERSION = '1.1.0';
         const FLOW_PARAM = 'cts_blind_assistant';
         const TROOP_PREFIX = 'chonguera_tropas_tribo_v2';
         const BLIND_PREFIX = 'chonguera_blind_preventivo_result';
         const COORDINATE_PREFIX = 'chonguera_blind_preventivo_coordinate_sets';
+        const AUDIT_PREFIX = 'chonguera_auditoria_apoios_v1';
+        const AUDIT_WORKFLOW_PREFIX = 'chonguera_auditoria_workflow_v1';
+        const AUDIT_TTL_MS = 24 * 60 * 60 * 1000;
         const query = new URLSearchParams(window.location.search);
         if (query.get('screen') !== 'ally' || document.getElementById(SCRIPT_ID)) return;
 
@@ -3393,6 +3396,27 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }).sort((left, right) => new Date(right.savedAt || 0) - new Date(left.savedAt || 0));
         }
 
+        function blindIdentity(payload) {
+            return String(payload?.snapshotId || `${payload?.savedAt || 'sem-data'}:${payload?.analysisMode || 'tribes'}:${(payload?.requestedCoordinates || []).join(',')}`);
+        }
+
+        function freshAuditResults() {
+            const results = new Map();
+            const now = Date.now();
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (!key?.startsWith(`${AUDIT_PREFIX}:${world}:`) || key.endsWith(':settings')) continue;
+                const payload = readJson(key);
+                for (const [villageId, result] of Object.entries(payload || {})) {
+                    const checkedAt = Number(result?.checkedAt || 0);
+                    if (!checkedAt || now - checkedAt >= AUDIT_TTL_MS) continue;
+                    const previous = results.get(String(villageId));
+                    if (!previous || checkedAt > Number(previous.checkedAt || 0)) results.set(String(villageId), result);
+                }
+            }
+            return results;
+        }
+
         function statusSnapshot() {
             const troops = compatiblePayload(TROOP_PREFIX);
             const villages = (troops?.results || []).flatMap((result) => result.villageDetails || []);
@@ -3402,7 +3426,16 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const withDeficit = analyses.find((analysis) => Array.isArray(analysis.needs) && analysis.needs.length > 0) || null;
             const newest = analyses[0] || null;
             const messages = document.querySelectorAll('#chonguera-distribuidor-apoios .cda-message').length;
-            return { troops, villages: villages.length, verified, pending, analyses, withDeficit, newest, messages };
+            const workflow = readJson(`${AUDIT_WORKFLOW_PREFIX}:${world}:${allyId}`);
+            const workflowCurrent = Boolean(workflow
+                && String(workflow.troopSavedAt || '') === String(troops?.savedAt || '')
+                && String(workflow.blindSnapshotId || '') === blindIdentity(withDeficit));
+            const auditCandidates = workflowCurrent && Array.isArray(workflow.villageIds) ? workflow.villageIds.map(String) : [];
+            const auditResults = freshAuditResults();
+            const auditChecked = auditCandidates.filter((villageId) => auditResults.has(villageId)).length;
+            const auditSafe = auditCandidates.filter((villageId) => ['exact', 'none'].includes(auditResults.get(villageId)?.visibility)).length;
+            const auditDone = pending === 0 || (workflowCurrent && auditChecked === auditCandidates.length);
+            return { troops, villages: villages.length, verified, pending, analyses, withDeficit, newest, messages, workflowCurrent, auditCandidates: auditCandidates.length, auditChecked, auditSafe, auditDone };
         }
 
         function buildUrl(targetMode, openFlow = true) {
@@ -3481,8 +3514,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const snapshot = statusSnapshot();
             const troopsDone = Boolean(snapshot.troops?.savedAt && snapshot.villages);
             const blindDone = Boolean(snapshot.withDeficit);
+            const auditDone = troopsDone && blindDone && snapshot.auditDone;
             const distributionDone = snapshot.messages > 0;
-            const currentStep = !troopsDone ? 1 : !blindDone ? 2 : !distributionDone ? 3 : 4;
+            const currentStep = !troopsDone ? 1 : !blindDone ? 2 : !auditDone ? 3 : 4;
             const troopStatus = troopsDone
                 ? `${formatNumber(snapshot.verified)} de ${formatNumber(snapshot.villages)} origens validadas · salvo em ${formatDate(snapshot.troops.savedAt)}`
                 : 'Ainda não existe uma coleta salva para o Distribuidor.';
@@ -3491,11 +3525,18 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 : snapshot.newest
                     ? `A análise mais recente possui 0 déficits (${formatDate(snapshot.newest.savedAt)}).`
                     : 'Nenhuma análise de blind salva.';
+            const auditStatus = auditDone
+                ? snapshot.auditCandidates
+                    ? `${formatNumber(snapshot.auditChecked)} candidata(s) consultada(s); ${formatNumber(snapshot.auditSafe)} liberada(s) com informação segura.`
+                    : 'Todas as origens candidatas foram validadas pelo cruzamento rápido; nenhuma consulta individual necessária.'
+                : snapshot.workflowCurrent
+                    ? `${formatNumber(snapshot.auditChecked)} de ${formatNumber(snapshot.auditCandidates)} candidata(s) consultada(s).`
+                    : `${formatNumber(snapshot.pending)} divergência(s) disponível(is); selecione somente as origens candidatas à distribuição.`;
             const steps = [
                 { number: 1, complete: troopsDone, title: 'Coletar e validar as tropas', copy: 'Abra Tropas da Tribo e clique no botão verde “Carregar e validar origens”. Aguarde aparecer “Salvo no navegador em…”.', status: troopStatus, action: 'troops', label: mode === 'members_defense' ? 'Mostrar coleta' : 'Abrir coleta' },
                 { number: 2, complete: blindDone, title: 'Calcular o Blind Preventivo', copy: 'Informe tribos/continentes, clique em “Analisar alcance” e salve uma análise que possua destinos com déficit.', status: blindStatus, action: 'blind', label: mode === 'contracts' ? 'Mostrar Blind Preventivo' : 'Abrir Blind Preventivo' },
-                { number: 3, complete: distributionDone, title: 'Distribuir os apoios', copy: 'Escolha a análise com déficit, confira reservas, rotas e blacklists e clique em “Distribuir apoios”.', status: distributionDone ? `${formatNumber(snapshot.messages)} MP(s) geradas nesta abertura.` : (troopsDone && blindDone ? 'Pré-requisitos prontos para distribuir.' : 'Aguardando as etapas anteriores.'), action: 'distribute', label: mode === 'members' ? 'Mostrar Distribuidor' : 'Abrir Distribuidor' },
-                { number: 4, complete: false, title: 'Auditar somente se houver bloqueio', copy: 'Se o Distribuidor disser que faltam origens seguras, carregue os membros, selecione as origens candidatas e consulte todos os lotes.', status: snapshot.pending ? `${formatNumber(snapshot.pending)} origem(ns) divergente(s) ou não validada(s); audite apenas as necessárias.` : 'Nenhuma divergência identificada na coleta.', action: 'audit', label: mode === 'members' ? 'Mostrar Auditoria' : 'Abrir Auditoria' }
+                { number: 3, complete: auditDone, title: 'Auditar as origens candidatas', copy: 'Antes de distribuir, carregue membros e aldeias, clique em “Selecionar origens candidatas” e consulte todos os lotes selecionados. Origens já validadas rapidamente não são consultadas outra vez.', status: auditStatus, action: 'audit', label: mode === 'members' ? 'Mostrar Auditoria' : 'Abrir Auditoria' },
+                { number: 4, complete: distributionDone, title: 'Distribuir os apoios', copy: 'Após a auditoria, escolha a análise com déficit, confira reservas, rotas e blacklists e clique em “Distribuir apoios”. Origens com resultado parcial continuam bloqueadas.', status: distributionDone ? `${formatNumber(snapshot.messages)} MP(s) geradas nesta abertura.` : (auditDone ? 'Validação concluída; distribuição liberada.' : 'Aguardando a auditoria das origens candidatas.'), action: 'distribute', label: mode === 'members' ? 'Mostrar Distribuidor' : 'Abrir Distribuidor', disabled: !auditDone }
             ];
             panel.innerHTML = `
                 <div class="cba-head"><span class="cba-head-icon">🛡️</span><div><h2>Chong Tribe Script — Assistente de Blind</h2><small>Um fluxo único, com o próximo clique indicado em cada etapa.</small></div><span class="cba-version">v${MODULE_VERSION}</span></div>
@@ -3505,7 +3546,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     ${steps.map((step) => `<section class="cba-step ${step.complete ? 'cba-complete' : ''} ${step.number === currentStep ? 'cba-current' : ''}">
                         <span class="cba-number">${step.complete ? '✓' : step.number}</span>
                         <div class="cba-copy"><strong>${escapeHtml(step.title)}</strong><small>${escapeHtml(step.copy)}</small><span class="cba-status">${escapeHtml(step.status)}</span></div>
-                        <button type="button" class="${step.number === currentStep ? 'cba-primary' : ''}" data-flow-action="${step.action}">${escapeHtml(step.label)}</button>
+                        <button type="button" class="${step.number === currentStep ? 'cba-primary' : ''}" data-flow-action="${step.action}" ${step.disabled ? 'disabled title="Conclua a auditoria antes de distribuir"' : ''}>${escapeHtml(step.label)}</button>
                     </section>`).join('')}
                 </div>`;
         }
@@ -5339,12 +5380,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         'use strict';
 
         const SCRIPT_ID = 'chonguera-auditoria-apoios';
-        const MODULE_VERSION = '1.4.1';
+        const MODULE_VERSION = '1.5.0';
         const STORAGE_PREFIX = 'chonguera_auditoria_apoios_v1';
         const TROOP_STORAGE_PREFIX = 'chonguera_tropas_tribo_v2';
         const BLIND_STORAGE_PREFIX = 'chonguera_blind_preventivo_result';
         const COORDINATE_RESULT_STORAGE_PREFIX = 'chonguera_blind_preventivo_coordinate_sets';
         const DISTRIBUTOR_CONFIG_PREFIX = 'chonguera_distribuidor_apoios_config';
+        const WORKFLOW_STORAGE_PREFIX = 'chonguera_auditoria_workflow_v1';
         const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const DEFAULT_BATCH_SIZE = 10;
         const DEFAULT_INTERVAL_MIN_MS = 1500;
@@ -5646,6 +5688,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const candidateIds = new Set(recommendation.villageIds);
             state.visible = state.villages.filter((village) => candidateIds.has(village.id));
             state.selected = new Set(state.visible.map((village) => village.id));
+            saveAuditWorkflow({
+                villageIds: [...state.selected],
+                troopSavedAt: recommendation.troopSavedAt,
+                blindSnapshotId: recommendation.blindSnapshotId
+            });
             state.listLimit = 250;
             root.querySelector('[data-field="coordinates"]').value = '';
             root.querySelector('[data-field="player"]').value = '';
@@ -5719,7 +5766,23 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 }
             }
             if (!selected.size) candidates.slice().sort((a, b) => sourceCoverageScore(b.available) - sourceCoverageScore(a.available)).slice(0, MAX_BATCH_SIZE).forEach((candidate) => selected.add(candidate.villageId));
-            return { villageIds: [...selected] };
+            return {
+                villageIds: [...selected],
+                troopSavedAt: troopPayload.savedAt || '',
+                blindSnapshotId: blindIdentity(blindPayload)
+            };
+        }
+
+        function saveAuditWorkflow(payload) {
+            try {
+                localStorage.setItem(`${WORKFLOW_STORAGE_PREFIX}:${world}:${allyId || 'sem_tribo'}`, JSON.stringify({
+                    version: 1,
+                    selectedAt: new Date().toISOString(),
+                    villageIds: Array.isArray(payload.villageIds) ? payload.villageIds.map(String) : [],
+                    troopSavedAt: String(payload.troopSavedAt || ''),
+                    blindSnapshotId: String(payload.blindSnapshotId || '')
+                }));
+            } catch (_error) { /* armazenamento opcional */ }
         }
 
         function sourceCoverageScore(available, goal = null) {
@@ -9898,7 +9961,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             panel.id = SCRIPT_ID;
             panel.innerHTML = `
                 <h2>Chong Tribe Script — Distribuidor de Apoios</h2>
-                <p class="cda-intro">Cruza o déficit salvo pelo Blind Preventivo com as tropas <strong>Na aldeia</strong>, respeitando as rotas entre continentes e priorizando jogadores da retaguarda. No modo seguro, uma origem só é usada depois da <strong>Auditoria de Apoios</strong>: quantidades externas conhecidas são descontadas e aldeias auditadas sem apoio visível usam o estoque parado integral. Aldeias aliadas com menos de <strong>${formatNumber(MIN_ALLIED_TARGET_POINTS)} pontos</strong> ficam fora do cálculo automático, mas aparecem para revisão manual. Tropas <strong>a caminho</strong> não são usadas e nada é enviado automaticamente.</p>
+                <p class="cda-intro">Cruza o déficit salvo pelo Blind Preventivo com as tropas <strong>Na aldeia</strong>, respeitando as rotas entre continentes e priorizando jogadores da retaguarda. No modo seguro, o cruzamento rápido libera as origens cujo estoque próprio fecha exatamente; <strong>antes da distribuição</strong>, as origens candidatas divergentes passam pela Auditoria de Apoios. Quantidades externas conhecidas são descontadas e resultados parciais permanecem bloqueados. Aldeias aliadas com menos de <strong>${formatNumber(MIN_ALLIED_TARGET_POINTS)} pontos</strong> ficam fora do cálculo automático, mas aparecem para revisão manual. Tropas <strong>a caminho</strong> não são usadas e nada é enviado automaticamente.</p>
                 <div class="cda-controls">
                     <label class="cda-analysis-selector"><span>Análise de blind que será distribuída</span>
                         <select name="blind_snapshot" ${state.blindPayloadOptions.length ? '' : 'disabled'}>
