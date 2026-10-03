@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.1.0
+// @version      4.1.1
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -20,7 +20,6 @@
 (function() {
     'use strict';
 
-    const MENU_URL = 'https://dl.dropbox.com/scl/fi/6tf6d9pjk6a07mj2oor41/MalboaMenuSistema.js?rlkey=wo3plf9nkd2fevv76oyg65p1y&dl=1';
     const CAPTCHA_MANAGER_URL = 'https://dl.dropbox.com/scl/fi/1hzacejr5k65wloc7nqu0/MalboaCaptchaManager.js?rlkey=g0nqsf3980h725kwkcv732mup&dl=1';
 
     async function loadScript(url, name) {
@@ -83,16 +82,3092 @@
     }
 
     async function init() {
+        // O menu-base já está fisicamente embutido logo após este carregador.
+        // Inicia a troca de marca imediatamente, sem aguardar nenhuma rede.
+        startBrandObserver();
         const captchaLoaded = await loadScript(CAPTCHA_MANAGER_URL, 'Gerenciador de proteção');
         if (!captchaLoaded || !window.MalboaCaptchaManager) createFallbackCaptchaManager();
-
-        // O Chong Tribe é anexado fisicamente ao fim deste userscript durante o build.
-        // Portanto, somente o motor-base precisa ser buscado na abertura da página.
-        await loadScript(MENU_URL, 'Motor de utilitários');
-        startBrandObserver();
     }
 
     init();
+})();
+
+// --- Menu-base embutido ---
+window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","menuItems":[{"id":"mass-collection","icon":"📦","text":"Coleta em massa","description":"Coleta recursos de todas as aldeias automaticamente","action":"massCollection","enabled":true,"order":1},{"id":"resource-balancer","icon":"⚖️","text":"Balanceador de Recurso","description":"Balanceia recursos entre aldeias automaticamente","action":"resourceBalancer","enabled":true,"order":2},{"id":"auto-demolition","icon":"🔨","text":"Auto-redução de construção","description":"Reduz automaticamente construções nas aldeias","action":"autoDemolition","enabled":true,"order":3},{"id":"account-manager","icon":"👤","text":"Gerente de Contas","description":"Gerencia pesquisa, construção e recrutamento automaticamente","action":"accountManager","enabled":true,"order":6},{"id":"auto-farm","icon":"🚜","text":"AutoFarmador","description":"Automatiza o envio de farms para aldeias","action":"autoFarm","enabled":false,"order":7},{"id":"noble-recruitment","icon":"👑","text":"Recrutamento de Nobres","description":"Recruta nobres automaticamente nas aldeias","action":"nobleRecruitment","enabled":true,"order":8},{"id":"balancer-pp","icon":"💎","text":"Balanceador PP","description":"Balanceador de recursos por pontos premium","action":"balancerPP","enabled":false,"order":9},{"id":"pacotes","icon":"https://dsbr.innogamescdn.com/asset/6c75de8b/graphic/buildings/storage.png","text":"Pacotes","description":"Usar pacotes automaticamente com base em grupos","action":"pacotes","enabled":true,"order":10},{"id":"cunhagem-em-massa","icon":"💰","text":"Cunhagem em Massa","description":"Cunha 1 moeda de ouro automaticamente nas aldeias do grupo","action":"cunhagemEmMassa","enabled":true,"order":11},{"id":"cunhagem-personalizada","icon":"https://dsbr.innogamescdn.com/asset/6c75de8b/graphic/unit/unit_snob.png","text":"Cunhagem Personalizada","description":"Cunha moedas em aldeias específicas com tempo definido","action":"cunhagemPersonalizada","enabled":true,"order":12},{"id":"puxar-recursos","icon":"📥","text":"Puxar Recursos","description":"Puxa recursos de um grupo para uma aldeia destino","action":"puxarRecursos","enabled":true,"order":13},{"id":"centralizador","icon":"🎯","text":"Centralizador","description":"Gera lista de aldeias centralizadas","action":"centralizador","enabled":true,"order":14},{"id":"balancete-pp","icon":"💎","text":"Balancete PP","description":"Analisa e equilibra recursos das aldeias com Praça","action":"balancetePP","enabled":true,"order":15},{"id":"settings","icon":"⚙️","text":"Configurações","description":"Configurações gerais do script","action":"openSettings","enabled":true,"order":99}]};
+(function() {
+    'use strict';
+
+    const MENU_CONFIG_URL = 'https://dl.dropbox.com/scl/fi/cqljhsztqvp27k9mc6gs0/MalboaMenuSistemaConfig.json?rlkey=euikbmeumakwxo50k1r331eju&dl=1';
+    
+    let menuConfigCache = null;
+    let lastFetchTime = 0;
+    const CACHE_DURATION = 5 * 60 * 1000;
+
+    // Função para limpar cache (útil para debug/atualizações)
+    window.clearMenuCache = function() {
+        menuConfigCache = null;
+        lastFetchTime = 0;
+        console.log('🗑️ [Menu] Cache limpo, forçando recarregamento');
+    };
+
+    async function loadMenuConfig() {
+        if (window.__chongEmbeddedMenuConfig) return window.__chongEmbeddedMenuConfig;
+        const now = Date.now();
+        
+        if (menuConfigCache && (now - lastFetchTime) < CACHE_DURATION) {
+            console.log('📋 [Menu] Usando config em cache');
+            return menuConfigCache;
+        }
+
+        try {
+            console.log('📥 [Menu] Carregando config do Dropbox...');
+            const response = await fetch(MENU_CONFIG_URL, {
+                method: 'GET',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Accept': 'application/json'
+                },
+                mode: 'cors' // Explicitamente define CORS
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status} - ${response.statusText}`);
+            }
+
+            const config = await response.json();
+            
+            // Valida estrutura do config
+            if (!config.menuItems || !Array.isArray(config.menuItems)) {
+                throw new Error('Estrutura do JSON inválida');
+            }
+            
+            menuConfigCache = config;
+            lastFetchTime = now;
+            
+            console.log(`✅ [Menu] Config carregada do Dropbox (${config.menuItems.length} itens)`);
+            return config;
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar config do Dropbox:', error.message);
+            console.log('⚠️ [Menu] Usando configuração padrão (fallback)');
+            console.log('💡 [Menu] Verifique se a URL do JSON está correta e acessível');
+            
+            // Se houver cache antigo (mesmo expirado), usa ele
+            if (menuConfigCache) {
+                console.log('🔄 [Menu] Usando cache antigo como fallback');
+                return menuConfigCache;
+            }
+            
+            return getDefaultMenuConfig();
+        }
+    }
+
+    function getDefaultMenuConfig() {
+        return {
+            version: "1.0",
+            menuItems: [
+                {
+                    id: "mass-collection",
+                    icon: "📦",
+                    text: "Coleta em massa",
+                    description: "Coleta recursos de todas as aldeias automaticamente",
+                    action: "massCollection",
+                    enabled: true,
+                    order: 1
+                },
+                {
+                    id: "resource-balancer",
+                    icon: "⚖️",
+                    text: "Balanceador de Recurso",
+                    description: "Balanceia recursos entre aldeias automaticamente",
+                    action: "resourceBalancer",
+                    enabled: true,
+                    order: 2
+                },
+                {
+                    id: "auto-demolition",
+                    icon: "🔨",
+                    text: "Auto-redução de construção",
+                    description: "Reduz automaticamente construções nas aldeias",
+                    action: "autoDemolition",
+                    enabled: true,
+                    order: 3
+                },
+                {
+                    id: "account-manager",
+                    icon: "👤",
+                    text: "Gerente de Contas",
+                    description: "Gerencia pesquisa, construção e recrutamento automaticamente",
+                    action: "accountManager",
+                    enabled: true,
+                    order: 6
+                },
+                {
+                    id: "auto-farm",
+                    icon: "🚜",
+                    text: "AutoFarmador",
+                    description: "Automatiza o envio de farms para aldeias",
+                    action: "autoFarm",
+                    enabled: false,
+                    order: 7
+                },
+                {
+                    id: "noble-recruitment",
+                    icon: "👑",
+                    text: "Recrutamento de Nobres",
+                    description: "Recruta nobres automaticamente nas aldeias",
+                    action: "nobleRecruitment",
+                    enabled: true,
+                    order: 8
+                },
+                {
+                    id: "balancer-pp",
+                    icon: "💎",
+                    text: "Balanceador PP",
+                    description: "Balanceador de recursos por pontos premium",
+                    action: "balancerPP",
+                    enabled: false,
+                    order: 9
+                },
+                {
+                    id: "pacotes",
+                    icon: "https://dsbr.innogamescdn.com/asset/6c75de8b/graphic/buildings/storage.png",
+                    text: "Pacotes",
+                    description: "Usar pacotes automaticamente com base em grupos",
+                    action: "pacotes",
+                    enabled: true,
+                    order: 10
+                },
+                {
+                    id: "cunhagem-em-massa",
+                    icon: "💰",
+                    text: "Cunhagem em Massa",
+                    description: "Cunha 1 moeda de ouro automaticamente nas aldeias do grupo",
+                    action: "cunhagemEmMassa",
+                    enabled: true,
+                    order: 11
+                },
+                {
+                    id: "cunhagem-personalizada",
+                    icon: "https://dsbr.innogamescdn.com/asset/6c75de8b/graphic/unit/unit_snob.png",
+                    text: "Cunhagem Personalizada",
+                    description: "Cunha moedas em aldeias específicas com tempo definido",
+                    action: "cunhagemPersonalizada",
+                    enabled: true,
+                    order: 12
+                },
+                {
+                    id: "puxar-recursos",
+                    icon: "📥",
+                    text: "Puxar Recursos",
+                    description: "Puxa recursos de um grupo para uma aldeia destino",
+                    action: "puxarRecursos",
+                    enabled: true,
+                    order: 12
+                },
+                {
+                    id: "centralizador",
+                    icon: "🎯",
+                    text: "Centralizador",
+                    description: "Gera lista de aldeias centralizadas",
+                    action: "centralizador",
+                    enabled: true,
+                    order: 13
+                },
+                {
+                    id: "balancete-pp",
+                    icon: "💎",
+                    text: "Balancete PP",
+                    description: "Analisa e equilibra recursos das aldeias com Praça",
+                    action: "balancetePP",
+                    enabled: true,
+                    order: 14
+                },
+                {
+                    id: "settings",
+                    icon: "⚙️",
+                    text: "Configurações",
+                    description: "Configurações gerais do script",
+                    action: "openSettings",
+                    enabled: true,
+                    order: 99
+                }
+            ]
+        };
+    }
+
+    const style = document.createElement('style');
+    style.textContent = `
+        /* ===== ANIMAÇÕES GLOBAIS DO MENU ===== */
+        @keyframes menuPulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(0.95); }
+        }
+
+        @keyframes menuGlow {
+            0%, 100% { box-shadow: 0 4px 15px rgba(67, 181, 129, 0.3); }
+            50% { box-shadow: 0 4px 25px rgba(67, 181, 129, 0.5), 0 0 35px rgba(67, 181, 129, 0.3); }
+        }
+
+        @keyframes menuSlideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px) scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        @keyframes menuItemPop {
+            0% { transform: scale(0.8); opacity: 0; }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes timerPulse {
+            0%, 100% { transform: scale(1); box-shadow: 0 2px 8px rgba(67, 181, 129, 0.4); }
+            50% { transform: scale(1.05); box-shadow: 0 2px 12px rgba(67, 181, 129, 0.6); }
+        }
+
+        /* ===== CONTAINER PRINCIPAL ===== */
+        .tw-tamper-container {
+            position: fixed;
+            bottom: 60px;
+            left: 20px;
+            z-index: 9999;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+
+        /* ===== ÍCONE PRINCIPAL ===== */
+        .tw-config-icon {
+            width: 54px;
+            height: 54px;
+            background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow:
+                0 4px 20px rgba(0, 0, 0, 0.4),
+                0 2px 8px rgba(0, 0, 0, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            border: 2px solid #4a4d52;
+            position: relative;
+        }
+
+        .tw-config-icon::before {
+            content: '⚙️';
+            font-size: 26px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .tw-config-icon:hover {
+            transform: scale(1.1);
+            box-shadow:
+                0 8px 30px rgba(0, 0, 0, 0.5),
+                0 4px 12px rgba(0, 0, 0, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.15);
+            border-color: #43b581;
+        }
+
+        .tw-config-icon:hover::before {
+            transform: rotate(90deg);
+        }
+
+        /* Indicador de módulos ativos no ícone */
+        .tw-config-icon::after {
+            content: '';
+            position: absolute;
+            top: -2px;
+            right: -2px;
+            width: 14px;
+            height: 14px;
+            background: linear-gradient(135deg, #43b581 0%, #2d8659 100%);
+            border-radius: 50%;
+            border: 2px solid #1a1a1a;
+            opacity: 0;
+            transition: all 0.3s;
+        }
+
+        .tw-config-icon.has-active::after {
+            opacity: 1;
+            animation: menuPulse 2s infinite;
+        }
+
+        /* ===== INDICADOR DE STATUS ===== */
+        .tw-submenu-item.status-active .status-indicator {
+            content: '';
+            position: absolute;
+            bottom: 0px;
+            right: 0px;
+            width: 12px;
+            height: 12px;
+            background: linear-gradient(135deg, #43b581 0%, #2d8659 100%);
+            border-radius: 50%;
+            border: 2px solid #1a1a1a;
+            box-shadow: 0 0 8px rgba(67, 181, 129, 0.5);
+            z-index: 10001;
+            animation: menuPulse 2s infinite;
+        }
+
+        /* ===== SUBMENU ===== */
+        .tw-submenu {
+            position: absolute;
+            bottom: 65px;
+            left: 0;
+            background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
+            border-radius: 16px;
+            box-shadow:
+                0 12px 40px rgba(0, 0, 0, 0.5),
+                0 4px 12px rgba(0, 0, 0, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
+            min-width: auto;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(20px) scale(0.9);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            border: 2px solid #4a4d52;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .tw-submenu.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0) scale(1);
+        }
+
+        /* ===== ITEM DO SUBMENU ===== */
+        .tw-submenu-item {
+            width: 46px;
+            height: 46px;
+            padding: 0;
+            cursor: pointer;
+            border-radius: 12px;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 2px solid transparent;
+            position: relative;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .tw-submenu-item:hover {
+            background: linear-gradient(135deg, #43b581 0%, #2d8659 100%);
+            transform: scale(1.1) translateX(5px);
+            border-color: #7dcea0;
+            box-shadow:
+                0 4px 15px rgba(67, 181, 129, 0.4),
+                0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        .tw-submenu-item:active {
+            transform: scale(1.05) translateX(5px);
+        }
+
+        .tw-submenu-item-icon {
+            font-size: 22px;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+        }
+
+        .tw-submenu-item:hover .tw-submenu-item-icon {
+            transform: scale(1.1);
+            filter: drop-shadow(0 2px 6px rgba(255, 255, 255, 0.2));
+        }
+
+        .tw-submenu-item-text {
+            display: none;
+        }
+
+        /* ===== TOOLTIP DO SUBMENU ===== */
+        .tw-submenu-item::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            left: 56px;
+            top: 50%;
+            transform: translateY(-50%) translateX(-5px);
+            background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
+            color: #e0e0e0;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            white-space: nowrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 10000;
+            pointer-events: none;
+            border: 2px solid #4a4d52;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+            letter-spacing: 0.3px;
+        }
+
+        .tw-submenu-item::before {
+            content: '';
+            position: absolute;
+            left: 50px;
+            top: 50%;
+            transform: translateY(-50%);
+            border: 6px solid transparent;
+            border-right-color: #4a4d52;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 10000;
+        }
+
+        .tw-submenu-item:hover::after {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(-50%) translateX(0);
+        }
+
+        .tw-submenu-item:hover::before {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* ===== TIMER DO SUBMENU ===== */
+        .submenu-timer {
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: linear-gradient(135deg, #f04747 0%, #c93636 100%);
+            color: white;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 6px;
+            border-radius: 10px;
+            min-width: 36px;
+            text-align: center;
+            border: 2px solid #1a1a1a;
+            box-shadow: 0 2px 8px rgba(240, 71, 71, 0.4);
+            z-index: 10;
+            font-family: 'Consolas', 'Monaco', monospace;
+            letter-spacing: 0.5px;
+        }
+
+        .submenu-timer.timer-active {
+            background: linear-gradient(135deg, #43b581 0%, #2d8659 100%);
+            box-shadow: 0 2px 8px rgba(67, 181, 129, 0.4);
+            animation: timerPulse 2s infinite;
+        }
+
+        .submenu-timer.timer-warning {
+            background: linear-gradient(135deg, #faa61a 0%, #e89900 100%);
+            box-shadow: 0 2px 8px rgba(250, 166, 26, 0.4);
+        }
+
+        .submenu-timer.timer-off {
+            background: linear-gradient(135deg, #555 0%, #333 100%);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            opacity: 0.7;
+        }
+
+        /* ===== SEPARADOR NO SUBMENU ===== */
+        .tw-submenu-separator {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            margin: 4px 0;
+        }
+
+        /* ===== ESTADO DESABILITADO ===== */
+        .tw-submenu-item.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        /* ===== ÍCONE DE IMAGEM ===== */
+        .tw-submenu-item-icon img {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+        }
+
+        /* ===== SISTEMA DE BALÕES DE MENSAGEM ===== */
+        .malboa-balloon {
+            position: absolute;
+            left: 55px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
+            border: 2px solid #4a4d52;
+            border-radius: 12px;
+            padding: 12px 16px;
+            min-width: 280px;
+            max-width: 400px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+            z-index: 10002;
+            font-size: 13px;
+            color: #e0e0e0;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease, transform 0.3s ease;
+        }
+
+        .malboa-balloon.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(-50%) scale(1);
+        }
+
+        .malboa-balloon::before {
+            content: '';
+            position: absolute;
+            left: -10px;
+            top: 50%;
+            transform: translateY(-50%);
+            border: 8px solid transparent;
+            border-right-color: #4a4d52;
+        }
+
+        .malboa-balloon::after {
+            content: '';
+            position: absolute;
+            left: -7px;
+            top: 50%;
+            transform: translateY(-50%);
+            border: 6px solid transparent;
+            border-right-color: #2d2d2d;
+        }
+
+        .malboa-balloon-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .malboa-balloon-icon {
+            font-size: 20px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+        }
+
+        .malboa-balloon-title {
+            font-weight: 700;
+            color: #ffffff;
+            font-size: 14px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+            letter-spacing: 0.3px;
+        }
+
+        .malboa-balloon-content {
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .malboa-balloon-message {
+            margin: 6px 0;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
+            border-left: 4px solid #7289da;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            word-break: break-word;
+            transition: all 0.2s ease;
+        }
+
+        .malboa-balloon-message:hover {
+            background: rgba(0, 0, 0, 0.4);
+        }
+
+        .malboa-balloon-message.success {
+            border-left-color: #43b581;
+            color: #7dcea0;
+            background: rgba(67, 181, 129, 0.1);
+        }
+
+        .malboa-balloon-message.warning {
+            border-left-color: #faa61a;
+            color: #f5b041;
+            background: rgba(250, 166, 26, 0.1);
+        }
+
+        .malboa-balloon-message.error {
+            border-left-color: #f04747;
+            color: #ec7063;
+            background: rgba(240, 71, 71, 0.1);
+        }
+
+        .malboa-balloon-message.info {
+            border-left-color: #7289da;
+            color: #85c1e9;
+            background: rgba(114, 137, 218, 0.1);
+        }
+
+        .malboa-balloon-progress {
+            margin-top: 10px;
+            height: 6px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 3px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        .malboa-balloon-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #7289da, #43b581);
+            border-radius: 3px;
+            transition: width 0.4s ease;
+            box-shadow: 0 0 8px rgba(67, 181, 129, 0.5);
+        }
+
+        .malboa-balloon-log {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 8px;
+            padding-right: 4px;
+        }
+
+        .malboa-balloon-log::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .malboa-balloon-log::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 3px;
+        }
+
+        .malboa-balloon-log::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #5a5a5a, #3a3a3a);
+            border-radius: 3px;
+        }
+
+        .malboa-balloon-log::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(180deg, #6a6a6a, #4a4a4a);
+        }
+
+        /* Animação de entrada das mensagens */
+        @keyframes messageSlideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .malboa-balloon-message {
+            animation: messageSlideIn 0.2s ease-out;
+        }
+
+        /* Indicador de status no header */
+        .malboa-balloon-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: auto;
+            font-size: 11px;
+            color: #888;
+        }
+
+        .malboa-balloon-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #43b581;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.9); }
+        }
+
+        /* Cores específicas por módulo */
+        .malboa-balloon[data-module="nobleRecruitment"] {
+            border-color: #FFD700;
+        }
+
+        .malboa-balloon[data-module="nobleRecruitment"]::before {
+            border-right-color: #FFD700;
+        }
+
+        .malboa-balloon[data-module="nobleRecruitment"] .malboa-balloon-header {
+            border-bottom-color: #FFD700;
+        }
+
+        .malboa-balloon[data-module="massCollection"] {
+            border-color: #43b581;
+        }
+
+        .malboa-balloon[data-module="massCollection"]::before {
+            border-right-color: #43b581;
+        }
+
+        .malboa-balloon[data-module="resourceBalancer"] {
+            border-color: #7289da;
+        }
+
+        .malboa-balloon[data-module="resourceBalancer"]::before {
+            border-right-color: #7289da;
+        }
+
+        .malboa-balloon[data-module="autoDemolition"] {
+            border-color: #8B4513;
+        }
+
+        .malboa-balloon[data-module="autoDemolition"]::before {
+            border-right-color: #8B4513;
+        }
+
+        .malboa-balloon[data-module="accountManager"] {
+            border-color: #9b59b6;
+        }
+
+        .malboa-balloon[data-module="accountManager"]::before {
+            border-right-color: #9b59b6;
+        }
+
+        .malboa-balloon[data-module="pacotes"] {
+            border-color: #e67e22;
+        }
+
+        .malboa-balloon[data-module="pacotes"]::before {
+            border-right-color: #e67e22;
+        }
+    `;
+
+    document.head.appendChild(style);
+
+    const container = document.createElement('div');
+    container.className = 'tw-tamper-container';
+
+    const configIcon = document.createElement('div');
+    configIcon.className = 'tw-config-icon';
+
+    const submenu = document.createElement('div');
+    submenu.className = 'tw-submenu';
+
+    function executeMenuAction(actionId) {
+        switch(actionId) {
+            case 'massCollection':
+                loadMassCollectionModal();
+                break;
+            case 'resourceBalancer':
+                loadResourceBalancerModal();
+                break;
+            case 'autoDemolition':
+                loadAutoDemolitionModal();
+                break;
+            case 'autoAttacks':
+                alert('Funcionalidade de Ataques automáticos será implementada em breve!');
+                break;
+            case 'autoConstruction':
+                alert('Funcionalidade de Construção automática será implementada em breve!');
+                break;
+            case 'accountManager':
+                loadAccountManagerModal();
+                break;
+            case 'autoFarm':
+                loadAutoFarmModal();
+                break;
+            case 'nobleRecruitment':
+                loadNobleRecruitmentModal();
+                break;
+            case 'balancerPP':
+                loadBalancerPPModal();
+                break;
+            case 'pacotes':
+                loadPacotesModal();
+                break;
+            case 'cunhagemEmMassa':
+                loadCunhagemModal();
+                break;
+            case 'cunhagemPersonalizada':
+                loadCunhagemPersonalizadaModal();
+                break;
+            case 'puxarRecursos':
+                loadPuxarRecursosModal();
+                break;
+            case 'centralizador':
+                loadCentralizadorModal();
+                break;
+            case 'balancetePP':
+                loadBalancetePPModal();
+                break;
+            case 'villageManager':
+                alert('Funcionalidade de Gerenciador de aldeias será implementada em breve!');
+                break;
+            case 'marketOptimizer':
+                alert('Funcionalidade de Otimizador de mercado será implementada em breve!');
+                break;
+            case 'openSettings':
+                alert('Painel de configurações será implementado em breve!');
+                break;
+            default:
+                console.warn('⚠️ [Menu] Ação não reconhecida:', actionId);
+        }
+    }
+
+    async function loadGroupManager() {
+        // Verifica se já foi carregado
+        if (window.MalboaGroupManager) {
+            console.log('👥 [Menu] Group Manager já está carregado');
+            return true;
+        }
+
+        try {
+            // Tenta carregar local primeiro (mais rápido e confiável)
+            let script = null;
+            
+            try {
+                const localResponse = await fetch('./MalboaGroupManager.js');
+                if (localResponse.ok) {
+                    script = await localResponse.text();
+                    console.log('📁 [Menu] Group Manager carregado localmente');
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Group Manager não encontrado localmente, tentando Dropbox...');
+            }
+            
+            // Se não conseguiu local, tenta Dropbox
+            if (!script) {
+                const GROUP_MANAGER_URL = 'https://dl.dropbox.com/scl/fi/586hi5ewhbbvij80o2tkh/MalboaGroupManager.js?rlkey=acy6xe94jsl9ptj1lgtp8um3h&dl=1';
+                
+                // Se tem URL válida no Dropbox, usa ela
+                if (GROUP_MANAGER_URL && !GROUP_MANAGER_URL.includes('your-key-here')) {
+                    try {
+                        const response = await fetch(GROUP_MANAGER_URL);
+                        if (response.ok) {
+                            script = await response.text();
+                            console.log('☁️ [Menu] Group Manager carregado do Dropbox');
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ [Menu] Erro ao carregar Group Manager do Dropbox:', e);
+                    }
+                }
+            }
+            
+            if (script) {
+                const scriptElement = document.createElement('script');
+                scriptElement.textContent = script;
+                document.head.appendChild(scriptElement);
+                
+                // Aguarda inicialização
+                await new Promise(resolve => {
+                    const checkInterval = setInterval(() => {
+                        if (window.MalboaGroupManager) {
+                            clearInterval(checkInterval);
+                            resolve();
+                        }
+                    }, 50);
+                    
+                    // Timeout de segurança
+                    setTimeout(() => {
+                        clearInterval(checkInterval);
+                        resolve();
+                    }, 3000);
+                });
+                
+                if (window.MalboaGroupManager) {
+                    console.log('✅ [Menu] Group Manager inicializado e pronto para buscar grupos');
+                    return true;
+                } else {
+                    console.warn('⚠️ [Menu] Group Manager não inicializou corretamente');
+                    return false;
+                }
+            } else {
+                console.warn('⚠️ [Menu] Não foi possível carregar MalboaGroupManager (local ou Dropbox)');
+                return false;
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar Group Manager:', error);
+            return false;
+        }
+    }
+
+    async function loadVillageManager() {
+        // Verifica se já foi carregado
+        if (window.MalboaVillageManager) {
+            console.log('🏘️ [Menu] Village Manager já está carregado');
+            return true;
+        }
+
+        try {
+            // Tenta carregar local primeiro (mais rápido e confiável)
+            let script = null;
+
+            try {
+                const localResponse = await fetch('./MalboaVillageManager.js');
+                if (localResponse.ok) {
+                    script = await localResponse.text();
+                    console.log('📁 [Menu] Village Manager carregado localmente');
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Village Manager não encontrado localmente, tentando Dropbox...');
+            }
+
+            // Se não conseguiu local, tenta Dropbox
+            if (!script) {
+                const VILLAGE_MANAGER_URL = 'https://dl.dropbox.com/scl/fi/oul0nkobrep5n4fu1g1wj/MalboaVillageManager.js?rlkey=3myq08t794igiic9joscitsgy&dl=1';
+
+                // Se tem URL válida no Dropbox, usa ela
+                if (VILLAGE_MANAGER_URL && !VILLAGE_MANAGER_URL.includes('PLACEHOLDER')) {
+                    try {
+                        const response = await fetch(VILLAGE_MANAGER_URL);
+                        if (response.ok) {
+                            script = await response.text();
+                            console.log('☁️ [Menu] Village Manager carregado do Dropbox');
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ [Menu] Erro ao carregar Village Manager do Dropbox:', e);
+                    }
+                }
+            }
+
+            if (script) {
+                const scriptElement = document.createElement('script');
+                scriptElement.textContent = script;
+                document.head.appendChild(scriptElement);
+
+                // Aguarda inicialização
+                await new Promise(resolve => {
+                    const checkInterval = setInterval(() => {
+                        if (window.MalboaVillageManager) {
+                            clearInterval(checkInterval);
+                            resolve();
+                        }
+                    }, 50);
+
+                    // Timeout de segurança
+                    setTimeout(() => {
+                        clearInterval(checkInterval);
+                        resolve();
+                    }, 3000);
+                });
+
+                if (window.MalboaVillageManager) {
+                    console.log('✅ [Menu] Village Manager inicializado e pronto para buscar aldeias');
+                    return true;
+                } else {
+                    console.warn('⚠️ [Menu] Village Manager não inicializou corretamente');
+                    return false;
+                }
+            } else {
+                console.warn('⚠️ [Menu] Não foi possível carregar MalboaVillageManager (local ou Dropbox)');
+                return false;
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar Village Manager:', error);
+            return false;
+        }
+    }
+
+    async function loadMassCollectionModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+            
+            // Carrega Group Manager (necessário para grupos)
+            await loadGroupManager();
+            
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/nt5wmqw147fbb70gvr32n/MalboaColetaConfigModal.js?rlkey=e4ojcoraes9z9rr44n0mxi27l&dl=1';
+            
+            const response = await fetch(MODAL_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+            
+            setTimeout(() => {
+                if (typeof createConfigModal === 'function') {
+                    createConfigModal();
+                } else {
+                    console.error('❌ [Menu] Função createConfigModal não encontrada');
+                    alert('Erro ao carregar modal de configuração');
+                }
+            }, 100);
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal:', error);
+            alert('Erro ao carregar modal de Coleta em Massa');
+        }
+    }
+
+    async function loadResourceBalancerModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+            
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/70b4nz5df4v4yctgy2r4e/MalboaBalanceadorConfigModal.js?rlkey=i1t4sty27jzjjgkt9warqi928&dl=1';
+            
+            const response = await fetch(MODAL_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+            
+            setTimeout(() => {
+                if (typeof createBalancerConfigModal === 'function') {
+                    createBalancerConfigModal();
+                } else {
+                    console.error('❌ [Menu] Função createBalancerConfigModal não encontrada');
+                    alert('Erro ao carregar modal de configuração');
+                }
+            }, 100);
+            
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do Balanceador:', error);
+            alert('Erro ao carregar modal do Balanceador de Recurso');
+        }
+    }
+
+    async function loadDesignSystem() {
+        // Verifica se já foi carregado
+        if (window.MalboaDesignSystem) {
+            return true;
+        }
+
+        try {
+            const DESIGN_SYSTEM_URL = 'https://dl.dropbox.com/scl/fi/uyag4kzjl4i06lmuz5og8/MalboaDesignSystem.js?rlkey=2vu0ppyl4bn13sbqvghque5zb&dl=1';
+            
+            const response = await fetch(DESIGN_SYSTEM_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+            
+            // Aguarda inicialização
+            await new Promise(resolve => {
+                const checkInterval = setInterval(() => {
+                    if (window.MalboaDesignSystem) {
+                        clearInterval(checkInterval);
+                        resolve();
+                    }
+                }, 50);
+                
+                // Timeout de segurança
+                setTimeout(() => {
+                    clearInterval(checkInterval);
+                    resolve();
+                }, 2000);
+            });
+            
+            console.log('🎨 [Menu] Design System carregado');
+            return true;
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar Design System:', error);
+            return false;
+        }
+    }
+
+    async function loadAutoDemolitionModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+            
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/d0gge9booez6yl46swk0a/MalboaAutoReducaoConfigModal.js?rlkey=dk8ob2inoe5jofwen3vtjirfr&dl=1';
+            
+            const response = await fetch(MODAL_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+            
+            setTimeout(() => {
+                const modal = document.getElementById('autoDemolitionConfigModal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                } else if (typeof window.loadAutoDemolitionModal === 'function') {
+                    window.loadAutoDemolitionModal();
+                } else {
+                    console.error('❌ [Menu] Modal não encontrado');
+                    alert('Erro ao carregar modal de configuração');
+                }
+            }, 100);
+            
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal de Auto-redução:', error);
+            alert('Erro ao carregar modal de Auto-redução de construção');
+        }
+    }
+
+    async function loadAccountManagerModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+
+            // Carrega MalboaTemplateManager se não existir
+            if (!window.MalboaTemplateManager) {
+                try {
+                    const tmResponse = await fetch('https://dl.dropbox.com/scl/fi/b6gnjj4ehjk9zw80n6qkh/MalboaTemplateManager.js?rlkey=ls60vqw0t7e72kp43j3n3xy49&dl=1');
+                    if (tmResponse.ok) {
+                        const tmScript = await tmResponse.text();
+                        const tmElement = document.createElement('script');
+                        tmElement.textContent = tmScript;
+                        document.head.appendChild(tmElement);
+                        console.log('✅ [Menu] MalboaTemplateManager carregado');
+                    }
+                } catch (e) {
+                    console.warn('⚠️ [Menu] Não foi possível carregar MalboaTemplateManager:', e);
+                }
+            }
+
+            // Carrega o modal
+            try {
+                const response = await fetch('https://dl.dropbox.com/scl/fi/ufubtmceqx124vwep6s7g/MalboaAccountManagerConfigModal.js?rlkey=elevvkegbgecp6s1aewvlqdqj&dl=1');
+                if (response.ok) {
+                    const script = await response.text();
+                    const scriptElement = document.createElement('script');
+                    scriptElement.textContent = script;
+                    document.head.appendChild(scriptElement);
+                    
+                    setTimeout(() => {
+                        if (typeof createAccountManagerConfigModal === 'function') {
+                            createAccountManagerConfigModal();
+                        } else {
+                            console.error('❌ [Menu] Função createAccountManagerConfigModal não encontrada');
+                            alert('Erro: Modal não carregou corretamente. Certifique-se que o arquivo existe.');
+                        }
+                    }, 100);
+                } else {
+                    throw new Error('Arquivo não encontrado');
+                }
+            } catch (e) {
+                console.error('❌ [Menu] Erro ao carregar modal localmente:', e);
+                alert('Modal do Gerente de Contas precisa ser carregado manualmente.\nArquivo: GerenteContas/MalboaAccountManagerConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+            
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do Gerente de Contas:', error);
+            alert('Erro ao carregar modal do Gerente de Contas');
+        }
+    }
+
+    async function loadNobleRecruitmentModal() {
+        try {
+            // Carrega Design System primeiro (se necessário)
+            await loadDesignSystem();
+
+            // Carrega Village Manager (necessário para seleção de aldeias)
+            await loadVillageManager();
+
+            // Carrega o modal do Recrutamento de Nobres do Dropbox
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/bnkdya3ub16hmgla9fik3/MalboaRecrutamentoNobresConfigModal.js?rlkey=8u6n8dm2e8rvk3v802xkho962&dl=1';
+
+            const response = await fetch(MODAL_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+
+            setTimeout(() => {
+                if (typeof createNobleConfigModal === 'function') {
+                    createNobleConfigModal();
+                } else {
+                    console.error('❌ [Menu] Função createNobleConfigModal não encontrada');
+                    alert('Erro ao carregar modal de configuração');
+                }
+            }, 100);
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do Recrutamento de Nobres:', error);
+            alert('Erro ao carregar modal do Recrutamento de Nobres');
+        }
+    }
+
+    // Carrega script de execução do Recrutamento de Nobres
+    async function loadNobleRecruitmentScript() {
+        try {
+            // Verifica se já foi carregado
+            if (window.MalboaRecrutamentoNobres) {
+                console.log('👑 [Nobres] Script de execução já carregado');
+                return;
+            }
+
+            const SCRIPT_URL = 'https://dl.dropbox.com/scl/fi/rfbscn3go1f7b3za9krkt/MalboaRecrutamentoNobres.js?rlkey=1fkbcl71w0ym1xumyi6qlk2j0&dl=1';
+
+            const response = await fetch(SCRIPT_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+
+            console.log('👑 [Nobres] Script de execução carregado');
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar script do Recrutamento de Nobres:', error);
+        }
+    }
+
+    // Carrega script de execução da Cunhagem Personalizada
+    async function loadCunhagemPersonalizadaScript() {
+        try {
+            // Verifica se já foi carregado
+            if (window.MalboaCunhagemPersonalizada) {
+                console.log('🪙 [Cunhagem Pers] Script de execução já carregado');
+                return;
+            }
+
+            const SCRIPT_URL = 'https://dl.dropbox.com/scl/fi/did2pquai2f1z5k62mg8u/MalboaCunhagemPersonalizada.js?rlkey=4cad1jfgn7gm9xciw6drckd0n&dl=1';
+
+            const response = await fetch(SCRIPT_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+
+            console.log('🪙 [Cunhagem Pers] Script de execução carregado');
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar script da Cunhagem Personalizada:', error);
+        }
+    }
+
+    async function loadAutoFarmModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+            
+            // Carrega o modal do AutoFarmador
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/de92qo4ij73vhrs4b1wyv/MalboaAutoFarmConfigModal.js?rlkey=9sbatxam9cwg4e09b2ofrzjwo&dl=1';
+            
+            // Tenta carregar localmente primeiro
+            try {
+                const localResponse = await fetch('./AutoFarm/MalboaAutoFarmConfigModal.js');
+                if (localResponse.ok) {
+                    const script = await localResponse.text();
+                    const scriptElement = document.createElement('script');
+                    scriptElement.textContent = script;
+                    document.head.appendChild(scriptElement);
+                    
+                    setTimeout(() => {
+                        if (typeof createAutoFarmConfigModal === 'function') {
+                            createAutoFarmConfigModal();
+                        } else {
+                            console.error('❌ [Menu] Função createAutoFarmConfigModal não encontrada');
+                            alert('Erro ao carregar modal de configuração');
+                        }
+                    }, 100);
+                    return;
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Modal não encontrado localmente, tentando Dropbox...');
+            }
+            
+            // Se não encontrou localmente, tenta Dropbox
+            if (MODAL_URL && !MODAL_URL.includes('your-key-here')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    if (response.ok) {
+                        const script = await response.text();
+                        const scriptElement = document.createElement('script');
+                        scriptElement.textContent = script;
+                        document.head.appendChild(scriptElement);
+                        
+                        setTimeout(() => {
+                            if (typeof createAutoFarmConfigModal === 'function') {
+                                createAutoFarmConfigModal();
+                            } else {
+                                console.error('❌ [Menu] Função createAutoFarmConfigModal não encontrada');
+                                alert('Erro ao carregar modal de configuração');
+                            }
+                        }, 100);
+                    } else {
+                        throw new Error('Arquivo não encontrado');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal do AutoFarmador precisa ser carregado manualmente.\nArquivo: AutoFarm/MalboaAutoFarmConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal do AutoFarmador precisa ser carregado manualmente.\nArquivo: AutoFarm/MalboaAutoFarmConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+            
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do AutoFarmador:', error);
+            alert('Erro ao carregar modal do AutoFarmador');
+        }
+    }
+
+    async function loadBalancerPPModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/zool56v9c4976f92gnmyf/MalboaBalancerPPConfigModal.js?rlkey=rw17vgffwwnhozyr6wyly6nj2&dl=1';
+
+            const response = await fetch(MODAL_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+
+            setTimeout(() => {
+                const modal = document.getElementById('balancerPPConfigModal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                } else if (typeof window.loadBalancerPPModal === 'function') {
+                    window.loadBalancerPPModal();
+                } else {
+                    console.error('❌ [Menu] Modal não encontrado');
+                    alert('Erro ao carregar modal de configuração');
+                }
+            }, 100);
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do Balanceador PP:', error);
+            alert('Erro ao carregar modal do Balanceador PP');
+        }
+    }
+
+    async function loadPacotesModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+
+            // Carrega Group Manager (necessário para grupos)
+            await loadGroupManager();
+
+            // URL do Dropbox para o modal de Pacotes
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/pp6zuchkhyzbgce6gexva/MalboaPacotesConfigModal.js?rlkey=a0hifhwwcqc764t71aqg58ndl&dl=1';
+
+            // Tenta carregar localmente primeiro
+            try {
+                const localResponse = await fetch('./Pacotes/MalboaPacotesConfigModal.js');
+                if (localResponse.ok) {
+                    const script = await localResponse.text();
+                    const scriptElement = document.createElement('script');
+                    scriptElement.textContent = script;
+                    document.head.appendChild(scriptElement);
+
+                    setTimeout(() => {
+                        if (typeof createPacotesConfigModal === 'function') {
+                            createPacotesConfigModal();
+                        } else {
+                            console.error('❌ [Menu] Função createPacotesConfigModal não encontrada');
+                            alert('Erro ao carregar modal de configuração');
+                        }
+                    }, 100);
+                    return;
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Modal de Pacotes não encontrado localmente, tentando Dropbox...');
+            }
+
+            // Se não encontrou localmente, tenta Dropbox
+            if (MODAL_URL && !MODAL_URL.includes('YOUR_KEY_HERE')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    if (response.ok) {
+                        const script = await response.text();
+                        const scriptElement = document.createElement('script');
+                        scriptElement.textContent = script;
+                        document.head.appendChild(scriptElement);
+
+                        setTimeout(() => {
+                            if (typeof createPacotesConfigModal === 'function') {
+                                createPacotesConfigModal();
+                            } else {
+                                console.error('❌ [Menu] Função createPacotesConfigModal não encontrada');
+                                alert('Erro ao carregar modal de configuração');
+                            }
+                        }, 100);
+                    } else {
+                        throw new Error('Arquivo não encontrado');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal de Pacotes precisa ser carregado manualmente.\nArquivo: Pacotes/MalboaPacotesConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal de Pacotes precisa ser carregado manualmente.\nArquivo: Pacotes/MalboaPacotesConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal de Pacotes:', error);
+            alert('Erro ao carregar modal de Pacotes');
+        }
+    }
+
+    async function loadCunhagemModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+
+            // Carrega Group Manager (necessário para grupos)
+            await loadGroupManager();
+
+            // Carrega Village Manager (necessário para seleção de aldeia)
+            await loadVillageManager();
+
+            // URL do Dropbox para o modal de Cunhagem em Massa
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/w94w715up2cadyf0na80q/MalboaCunhagemConfigModal.js?rlkey=f9v6jce6lr8hyvdpt8wxc22bu&dl=1';
+
+            // Tenta carregar localmente primeiro
+            try {
+                const localResponse = await fetch('./CunhagemEmMassa/MalboaCunhagemConfigModal.js');
+                if (localResponse.ok) {
+                    const script = await localResponse.text();
+                    const scriptElement = document.createElement('script');
+                    scriptElement.textContent = script;
+                    document.head.appendChild(scriptElement);
+
+                    setTimeout(() => {
+                        if (typeof openCunhagemConfigModal === 'function') {
+                            openCunhagemConfigModal();
+                        } else {
+                            console.error('❌ [Menu] Função openCunhagemConfigModal não encontrada');
+                            alert('Erro ao carregar modal de configuração');
+                        }
+                    }, 100);
+                    return;
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Modal de Cunhagem não encontrado localmente, tentando Dropbox...');
+            }
+
+            // Se não encontrou localmente, tenta Dropbox
+            if (MODAL_URL && !MODAL_URL.includes('PLACEHOLDER')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    if (response.ok) {
+                        const script = await response.text();
+                        const scriptElement = document.createElement('script');
+                        scriptElement.textContent = script;
+                        document.head.appendChild(scriptElement);
+
+                        setTimeout(() => {
+                            if (typeof openCunhagemConfigModal === 'function') {
+                                openCunhagemConfigModal();
+                            } else {
+                                console.error('❌ [Menu] Função openCunhagemConfigModal não encontrada');
+                                alert('Erro ao carregar modal de configuração');
+                            }
+                        }, 100);
+                    } else {
+                        throw new Error('Arquivo não encontrado');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal de Cunhagem precisa ser carregado manualmente.\nArquivo: CunhagemEmMassa/MalboaCunhagemConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal de Cunhagem precisa ser carregado manualmente.\nArquivo: CunhagemEmMassa/MalboaCunhagemConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal de Cunhagem:', error);
+            alert('Erro ao carregar modal de Cunhagem');
+        }
+    }
+
+    async function loadCunhagemPersonalizadaModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+
+            // URL do Dropbox para o modal de Cunhagem Personalizada
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/000tngi2juqbgkor76w34/MalboaCunhagemPersonalizadaConfigModal.js?rlkey=9wxld072gsxh261so3ze3dk6q&dl=1';
+
+            // Tenta carregar localmente primeiro
+            try {
+                const localResponse = await fetch('./CunhagemPersonalizada/MalboaCunhagemPersonalizadaConfigModal.js');
+                if (localResponse.ok) {
+                    const script = await localResponse.text();
+                    const scriptElement = document.createElement('script');
+                    scriptElement.textContent = script;
+                    document.head.appendChild(scriptElement);
+
+                    setTimeout(() => {
+                        if (typeof openCunhagemPersConfigModal === 'function') {
+                            openCunhagemPersConfigModal();
+                        } else {
+                            console.error('❌ [Menu] Função openCunhagemPersConfigModal não encontrada');
+                            alert('Erro ao carregar modal de configuração');
+                        }
+                    }, 100);
+                    return;
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Modal de Cunhagem Personalizada não encontrado localmente, tentando Dropbox...');
+            }
+
+            // Se não encontrou localmente, tenta Dropbox
+            if (MODAL_URL && !MODAL_URL.includes('PLACEHOLDER')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    if (response.ok) {
+                        const script = await response.text();
+                        const scriptElement = document.createElement('script');
+                        scriptElement.textContent = script;
+                        document.head.appendChild(scriptElement);
+
+                        setTimeout(() => {
+                            if (typeof openCunhagemPersConfigModal === 'function') {
+                                openCunhagemPersConfigModal();
+                            } else {
+                                console.error('❌ [Menu] Função openCunhagemPersConfigModal não encontrada');
+                                alert('Erro ao carregar modal de configuração');
+                            }
+                        }, 100);
+                    } else {
+                        throw new Error('Arquivo não encontrado');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal de Cunhagem Personalizada precisa ser carregado manualmente.\nArquivo: CunhagemPersonalizada/MalboaCunhagemPersonalizadaConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal de Cunhagem Personalizada precisa ser carregado manualmente.\nArquivo: CunhagemPersonalizada/MalboaCunhagemPersonalizadaConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal de Cunhagem Personalizada:', error);
+            alert('Erro ao carregar modal de Cunhagem Personalizada');
+        }
+    }
+
+    async function loadPuxarRecursosModal() {
+        try {
+            // Carrega Design System primeiro
+            await loadDesignSystem();
+
+            // Carrega Group Manager (necessário para grupos)
+            await loadGroupManager();
+
+            // Carrega Village Manager (necessário para seleção de aldeia)
+            await loadVillageManager();
+
+            // URL do Dropbox para o modal de Puxar Recursos
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/s0z7u7jyuq1cngelph3bs/MalboaPuxarRecursosConfigModal.js?rlkey=acczrn4vasj4y9d2a0416id13&dl=1';
+
+            // Tenta carregar localmente primeiro
+            try {
+                const localResponse = await fetch('./PuxarRecursos/MalboaPuxarRecursosConfigModal.js');
+                if (localResponse.ok) {
+                    const script = await localResponse.text();
+                    const scriptElement = document.createElement('script');
+                    scriptElement.textContent = script;
+                    document.head.appendChild(scriptElement);
+
+                    setTimeout(() => {
+                        if (typeof openPuxarRecursosConfigModal === 'function') {
+                            openPuxarRecursosConfigModal();
+                        } else {
+                            console.error('❌ [Menu] Função openPuxarRecursosConfigModal não encontrada');
+                            alert('Erro ao carregar modal de configuração');
+                        }
+                    }, 100);
+                    return;
+                }
+            } catch (e) {
+                console.log('📁 [Menu] Modal de Puxar Recursos não encontrado localmente, tentando Dropbox...');
+            }
+
+            // Se não encontrou localmente, tenta Dropbox
+            if (MODAL_URL && !MODAL_URL.includes('PLACEHOLDER')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    if (response.ok) {
+                        const script = await response.text();
+                        const scriptElement = document.createElement('script');
+                        scriptElement.textContent = script;
+                        document.head.appendChild(scriptElement);
+
+                        setTimeout(() => {
+                            if (typeof openPuxarRecursosConfigModal === 'function') {
+                                openPuxarRecursosConfigModal();
+                            } else {
+                                console.error('❌ [Menu] Função openPuxarRecursosConfigModal não encontrada');
+                                alert('Erro ao carregar modal de configuração');
+                            }
+                        }, 100);
+                    } else {
+                        throw new Error('Arquivo não encontrado');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal de Puxar Recursos precisa ser carregado manualmente.\nArquivo: PuxarRecursos/MalboaPuxarRecursosConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal de Puxar Recursos precisa ser carregado manualmente.\nArquivo: PuxarRecursos/MalboaPuxarRecursosConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal de Puxar Recursos:', error);
+            alert('Erro ao carregar modal de Puxar Recursos');
+        }
+    }
+
+    async function loadCentralizadorModal() {
+        try {
+            console.log('🎯 [Menu] Carregando modal do Centralizador...');
+
+            // Verifica se já está carregado
+            if (typeof window.openCentralizadorConfigModal === 'function') {
+                window.openCentralizadorConfigModal();
+                return;
+            }
+
+            // URL do Dropbox para o modal de Centralizador
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/9e9s1aouw5wdwnf0odlpw/MalboaCentralizadorConfigModal.js?rlkey=q6jbjyejfhjl7diirfhx098ed&dl=1';
+
+            if (MODAL_URL && !MODAL_URL.includes('PLACEHOLDER')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    const scriptContent = await response.text();
+                    const script = document.createElement('script');
+                    script.textContent = scriptContent;
+                    document.head.appendChild(script);
+
+                    // Aguarda carregar e abre
+                    await new Promise(resolve => setTimeout(resolve, 100));
+
+                    if (typeof window.openCentralizadorConfigModal === 'function') {
+                        window.openCentralizadorConfigModal();
+                    } else {
+                        alert('Erro ao inicializar modal do Centralizador');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal do Centralizador precisa ser carregado manualmente.\nArquivo: Centralizador/MalboaCentralizadorConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal do Centralizador precisa ser carregado manualmente.\nArquivo: Centralizador/MalboaCentralizadorConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do Centralizador:', error);
+            alert('Erro ao carregar modal do Centralizador');
+        }
+    }
+
+    async function loadBalancetePPModal() {
+        try {
+            console.log('⚖️ [Menu] Carregando modal do Balancete PP...');
+
+            // Verifica se já está carregado
+            if (typeof window.openBalancetePPConfigModal === 'function') {
+                window.openBalancetePPConfigModal();
+                return;
+            }
+
+            // URL do Dropbox para o modal de Balancete PP
+            const MODAL_URL = 'https://dl.dropbox.com/scl/fi/arqy4va0ipdpd8wdtq904/MalboaBalancetePPConfigModal.js?rlkey=qzg0z6me5kxm100nwxpnxnz4f&dl=1';
+
+            if (MODAL_URL && !MODAL_URL.includes('PLACEHOLDER')) {
+                try {
+                    const response = await fetch(MODAL_URL);
+                    const scriptContent = await response.text();
+                    const script = document.createElement('script');
+                    script.textContent = scriptContent;
+                    document.head.appendChild(script);
+
+                    // Aguarda carregar e abre
+                    await new Promise(resolve => setTimeout(resolve, 100));
+
+                    if (typeof window.openBalancetePPConfigModal === 'function') {
+                        window.openBalancetePPConfigModal();
+                    } else {
+                        alert('Erro ao inicializar modal do Balancete PP');
+                    }
+                } catch (e) {
+                    console.error('❌ [Menu] Erro ao carregar modal do Dropbox:', e);
+                    alert('Modal do Balancete PP precisa ser carregado manualmente.\nArquivo: BalancetePP/MalboaBalancetePPConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+                }
+            } else {
+                alert('Modal do Balancete PP precisa ser carregado manualmente.\nArquivo: BalancetePP/MalboaBalancetePPConfigModal.js\n\nOu suba para Dropbox e adicione a URL no código.');
+            }
+
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar modal do Balancete PP:', error);
+            alert('Erro ao carregar modal do Balancete PP');
+        }
+    }
+
+    async function createMenuItems() {
+        try {
+            const config = await loadMenuConfig();
+            const sortedItems = config.menuItems
+                .filter(item => item.enabled)
+                .sort((a, b) => a.order - b.order);
+
+            sortedItems.forEach(item => {
+                const menuItem = document.createElement('div');
+                menuItem.className = 'tw-submenu-item';
+                menuItem.setAttribute('data-tooltip', item.description);
+                menuItem.setAttribute('data-action', item.action);
+                
+                const icon = document.createElement('span');
+                icon.className = 'tw-submenu-item-icon';
+
+                // Verifica se é URL de imagem ou emoji
+                if (item.icon && (item.icon.startsWith('http') || item.icon.startsWith('//'))) {
+                    const img = document.createElement('img');
+                    img.src = item.icon;
+                    img.style.cssText = 'width: 18px; height: 18px; object-fit: contain;';
+                    icon.appendChild(img);
+                } else {
+                    icon.textContent = item.icon;
+                }
+                menuItem.appendChild(icon);
+                
+                // Adiciona timer para Coleta
+                if (item.action === 'massCollection') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuNextExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+                
+                // Adiciona timer para Balanceador
+                if (item.action === 'resourceBalancer') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuBalancerExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+                
+                // Adiciona timer para Auto-redução
+                if (item.action === 'autoDemolition') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuAutoReducaoExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+                
+                // Adiciona timer para Gerente de Contas
+                if (item.action === 'accountManager') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuAccountManagerExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+                
+                // Adiciona timer para AutoFarmador
+                if (item.action === 'autoFarm') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuAutoFarmExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+
+                // Adiciona timer para Balanceador PP
+                if (item.action === 'balancerPP') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuBalancerPPExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+
+                // Adiciona timer para Pacotes
+                if (item.action === 'pacotes') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuPacotesExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+
+                // Adiciona timer para Recrutamento de Nobres
+                if (item.action === 'nobleRecruitment') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuNobleRecruitmentExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+
+                // Adiciona timer para Cunhagem em Massa
+                if (item.action === 'cunhagemEmMassa') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuCunhagemExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+
+                // Adiciona timer para Puxar Recursos
+                if (item.action === 'puxarRecursos') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuPuxarRecursosExecutionTimer';
+                    timerElement.textContent = '--:--';
+                    menuItem.appendChild(timerElement);
+                }
+
+                // Adiciona contador de moedas para Cunhagem Personalizada
+                if (item.action === 'cunhagemPersonalizada') {
+                    const timerElement = document.createElement('div');
+                    timerElement.className = 'submenu-timer';
+                    timerElement.id = 'submenuCunhagemPersCoinsCounter';
+                    timerElement.textContent = '0';
+                    menuItem.appendChild(timerElement);
+                }
+
+                menuItem.addEventListener('click', () => {
+                    executeMenuAction(item.action);
+                });
+                
+                submenu.appendChild(menuItem);
+            });
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao criar itens:', error);
+        }
+    }
+
+    let isMenuOpen = false;
+
+    function saveMenuState() {
+        try {
+            let config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            if (!config.menuState) config.menuState = {};
+            config.menuState.isOpen = isMenuOpen;
+            localStorage.setItem('MalboaUtiliesConfig', JSON.stringify(config));
+            console.log('💾 [Menu] Estado salvo:', isMenuOpen ? 'ABERTO' : 'FECHADO');
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao salvar estado:', error);
+        }
+    }
+
+    function loadMenuState() {
+        try {
+            if (!submenu || !document.body.contains(submenu)) {
+                console.log('⏳ [Menu] Aguardando DOM...');
+                setTimeout(loadMenuState, 100);
+                return;
+            }
+            
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const savedState = config.menuState?.isOpen;
+            
+            console.log('📋 [Menu] Estado salvo:', savedState);
+            
+            if (typeof savedState === 'boolean') {
+                isMenuOpen = savedState;
+                
+                if (isMenuOpen) {
+                    submenu.classList.add('show');
+                    console.log('📋 [Menu] Restaurado como ABERTO');
+                } else {
+                    submenu.classList.remove('show');
+                    console.log('📋 [Menu] Restaurado como FECHADO');
+                }
+            } else {
+                console.log('📋 [Menu] Nenhum estado salvo, iniciando fechado');
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao carregar estado:', error);
+        }
+    }
+
+    function openMenu() {
+        isMenuOpen = true;
+        submenu.classList.add('show');
+        saveMenuState();
+    }
+
+    function closeMenu() {
+        isMenuOpen = false;
+            submenu.classList.remove('show');
+        saveMenuState();
+    }
+
+    function toggleMenu() {
+        if (isMenuOpen) {
+            closeMenu();
+        } else {
+            openMenu();
+        }
+    }
+
+    configIcon.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleMenu();
+    });
+
+    container.appendChild(configIcon);
+    container.appendChild(submenu);
+    document.body.appendChild(container);
+
+    createMenuItems();
+
+    setTimeout(() => {
+        loadMenuState();
+    }, 500);
+    
+    loadMalboaEngine();
+    startStatusCheck();
+
+    // Carrega Group Manager automaticamente ao iniciar
+    loadGroupManager();
+
+    // Carrega script de execução do Recrutamento de Nobres
+    loadNobleRecruitmentScript();
+
+    // Carrega script de execução da Cunhagem Personalizada
+    loadCunhagemPersonalizadaScript();
+
+    console.log('📋 [Menu] Sistema carregado');
+
+    // ===== SISTEMA DE BALÕES DE MENSAGEM (MalboaTooltip) =====
+
+    const balloons = {}; // Armazena referências aos balões ativos
+
+    /**
+     * API Global para criar e gerenciar balões de mensagem no submenu
+     */
+    window.MalboaTooltip = {
+        /**
+         * Cria um balão de mensagem para um módulo específico
+         * @param {string} moduleAction - ID da ação do módulo (ex: 'nobleRecruitment')
+         * @param {object} options - Opções do balão
+         * @param {string} options.icon - Emoji ou ícone do balão
+         * @param {string} options.title - Título do balão
+         * @returns {object} - Objeto com métodos para manipular o balão
+         */
+        create: function(moduleAction, options = {}) {
+            // Remove balão existente se houver
+            this.destroy(moduleAction);
+
+            // Encontra o item do submenu correspondente
+            const menuItem = document.querySelector(`.tw-submenu-item[data-action="${moduleAction}"]`);
+            if (!menuItem) {
+                console.warn(`📋 [Tooltip] Item de menu não encontrado: ${moduleAction}`);
+                return null;
+            }
+
+            // Cria o elemento do balão
+            const balloon = document.createElement('div');
+            balloon.className = 'malboa-balloon';
+            balloon.setAttribute('data-module', moduleAction);
+            balloon.id = `malboa-balloon-${moduleAction}`;
+
+            // Estrutura interna
+            balloon.innerHTML = `
+                <div class="malboa-balloon-header">
+                    <span class="malboa-balloon-icon">${options.icon || '📋'}</span>
+                    <span class="malboa-balloon-title">${options.title || 'Executando...'}</span>
+                </div>
+                <div class="malboa-balloon-content">
+                    <div class="malboa-balloon-log"></div>
+                </div>
+            `;
+
+            // Adiciona ao item do menu
+            menuItem.appendChild(balloon);
+
+            // Força reflow e mostra
+            balloon.offsetHeight;
+            balloon.classList.add('show');
+
+            // Armazena referência
+            balloons[moduleAction] = {
+                element: balloon,
+                logElement: balloon.querySelector('.malboa-balloon-log'),
+                messages: [],
+                autoHideTimeout: null
+            };
+
+            console.log(`📋 [Tooltip] Balão criado para: ${moduleAction}`);
+
+            return this.get(moduleAction);
+        },
+
+        /**
+         * Obtém o controlador de um balão existente
+         * @param {string} moduleAction - ID da ação do módulo
+         * @returns {object|null} - Objeto com métodos para manipular o balão
+         */
+        get: function(moduleAction) {
+            const balloonData = balloons[moduleAction];
+            if (!balloonData) return null;
+
+            return {
+                /**
+                 * Adiciona uma mensagem ao log do balão
+                 * @param {string} text - Texto da mensagem
+                 * @param {string} type - Tipo: 'info', 'success', 'warning', 'error'
+                 */
+                log: function(text, type = 'info') {
+                    if (!balloonData.logElement) return this;
+
+                    const msgEl = document.createElement('div');
+                    msgEl.className = `malboa-balloon-message ${type}`;
+                    msgEl.textContent = text;
+
+                    balloonData.logElement.appendChild(msgEl);
+                    balloonData.messages.push({ text, type, time: Date.now() });
+
+                    // Auto-scroll para última mensagem
+                    balloonData.logElement.scrollTop = balloonData.logElement.scrollHeight;
+
+                    // Limita a 20 mensagens
+                    if (balloonData.messages.length > 20) {
+                        const firstMsg = balloonData.logElement.querySelector('.malboa-balloon-message');
+                        if (firstMsg) firstMsg.remove();
+                        balloonData.messages.shift();
+                    }
+
+                    return this;
+                },
+
+                /**
+                 * Define o progresso (0-100)
+                 * @param {number} percent - Porcentagem de progresso
+                 */
+                progress: function(percent) {
+                    let progressEl = balloonData.element.querySelector('.malboa-balloon-progress');
+
+                    if (!progressEl) {
+                        progressEl = document.createElement('div');
+                        progressEl.className = 'malboa-balloon-progress';
+                        progressEl.innerHTML = '<div class="malboa-balloon-progress-bar" style="width: 0%"></div>';
+                        balloonData.element.querySelector('.malboa-balloon-content').appendChild(progressEl);
+                    }
+
+                    const bar = progressEl.querySelector('.malboa-balloon-progress-bar');
+                    if (bar) {
+                        bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+                    }
+
+                    return this;
+                },
+
+                /**
+                 * Atualiza o título do balão
+                 * @param {string} title - Novo título
+                 */
+                setTitle: function(title) {
+                    const titleEl = balloonData.element.querySelector('.malboa-balloon-title');
+                    if (titleEl) titleEl.textContent = title;
+                    return this;
+                },
+
+                /**
+                 * Limpa todas as mensagens do log
+                 */
+                clear: function() {
+                    if (balloonData.logElement) {
+                        balloonData.logElement.innerHTML = '';
+                        balloonData.messages = [];
+                    }
+                    return this;
+                },
+
+                /**
+                 * Esconde o balão após um tempo (ms)
+                 * @param {number} delay - Tempo em ms para esconder (default: 3000)
+                 */
+                hideAfter: function(delay = 3000) {
+                    if (balloonData.autoHideTimeout) {
+                        clearTimeout(balloonData.autoHideTimeout);
+                    }
+
+                    balloonData.autoHideTimeout = setTimeout(() => {
+                        window.MalboaTooltip.destroy(moduleAction);
+                    }, delay);
+
+                    return this;
+                },
+
+                /**
+                 * Mostra o balão
+                 */
+                show: function() {
+                    balloonData.element.classList.add('show');
+                    return this;
+                },
+
+                /**
+                 * Esconde o balão (sem destruir)
+                 */
+                hide: function() {
+                    balloonData.element.classList.remove('show');
+                    return this;
+                },
+
+                /**
+                 * Destrói o balão
+                 */
+                destroy: function() {
+                    window.MalboaTooltip.destroy(moduleAction);
+                }
+            };
+        },
+
+        /**
+         * Destrói um balão
+         * @param {string} moduleAction - ID da ação do módulo
+         */
+        destroy: function(moduleAction) {
+            const balloonData = balloons[moduleAction];
+            if (balloonData) {
+                if (balloonData.autoHideTimeout) {
+                    clearTimeout(balloonData.autoHideTimeout);
+                }
+                if (balloonData.element && balloonData.element.parentNode) {
+                    balloonData.element.classList.remove('show');
+                    setTimeout(() => {
+                        if (balloonData.element && balloonData.element.parentNode) {
+                            balloonData.element.remove();
+                        }
+                    }, 200);
+                }
+                delete balloons[moduleAction];
+                console.log(`📋 [Tooltip] Balão destruído: ${moduleAction}`);
+            }
+        },
+
+        /**
+         * Verifica se um balão existe
+         * @param {string} moduleAction - ID da ação do módulo
+         * @returns {boolean}
+         */
+        exists: function(moduleAction) {
+            return !!balloons[moduleAction];
+        },
+
+        /**
+         * Destrói todos os balões
+         */
+        destroyAll: function() {
+            Object.keys(balloons).forEach(key => this.destroy(key));
+        }
+    };
+
+    console.log('📋 [Tooltip] Sistema de balões inicializado');
+
+    function isAutomationActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.coletaEmMassa && config.coletaEmMassa.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isBalancerActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.balanceadorRecurso && config.balanceadorRecurso.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isAutoReducaoActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.autoReducao && config.autoReducao.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isAccountManagerActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.gerenteContas && config.gerenteContas.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isAutoFarmActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.autoFarm && config.autoFarm.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isBalancerPPActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.balancerPP && config.balancerPP.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isPacotesActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.pacotes && config.pacotes.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isNobleRecruitmentActive() {
+        try {
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            return config.recrutamentoNobres && config.recrutamentoNobres.executar === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function updateIconStatus() {
+        // Atualiza status da Coleta
+        const coletaMenuItem = document.querySelector('.tw-submenu-item[data-action="massCollection"]');
+        if (coletaMenuItem) {
+            const isActive = isAutomationActive();
+
+            if (isActive) {
+                coletaMenuItem.classList.add('status-active');
+                if (!coletaMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    coletaMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                coletaMenuItem.classList.remove('status-active');
+                const existingIndicator = coletaMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do Balanceador
+        const balancerMenuItem = document.querySelector('.tw-submenu-item[data-action="resourceBalancer"]');
+        if (balancerMenuItem) {
+            const isActive = isBalancerActive();
+
+            if (isActive) {
+                balancerMenuItem.classList.add('status-active');
+                if (!balancerMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    balancerMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                balancerMenuItem.classList.remove('status-active');
+                const existingIndicator = balancerMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do Auto-redução
+        const autoReducaoMenuItem = document.querySelector('.tw-submenu-item[data-action="autoDemolition"]');
+        if (autoReducaoMenuItem) {
+            const isActive = isAutoReducaoActive();
+
+            if (isActive) {
+                autoReducaoMenuItem.classList.add('status-active');
+                if (!autoReducaoMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    autoReducaoMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                autoReducaoMenuItem.classList.remove('status-active');
+                const existingIndicator = autoReducaoMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do Gerente de Contas
+        const accountManagerMenuItem = document.querySelector('.tw-submenu-item[data-action="accountManager"]');
+        if (accountManagerMenuItem) {
+            const isActive = isAccountManagerActive();
+
+            if (isActive) {
+                accountManagerMenuItem.classList.add('status-active');
+                if (!accountManagerMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    accountManagerMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                accountManagerMenuItem.classList.remove('status-active');
+                const existingIndicator = accountManagerMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do AutoFarmador
+        const autoFarmMenuItem = document.querySelector('.tw-submenu-item[data-action="autoFarm"]');
+        if (autoFarmMenuItem) {
+            const isActive = isAutoFarmActive();
+
+            if (isActive) {
+                autoFarmMenuItem.classList.add('status-active');
+                if (!autoFarmMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    autoFarmMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                autoFarmMenuItem.classList.remove('status-active');
+                const existingIndicator = autoFarmMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do Balanceador PP
+        const balancerPPMenuItem = document.querySelector('.tw-submenu-item[data-action="balancerPP"]');
+        if (balancerPPMenuItem) {
+            const isActive = isBalancerPPActive();
+
+            if (isActive) {
+                balancerPPMenuItem.classList.add('status-active');
+                if (!balancerPPMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    balancerPPMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                balancerPPMenuItem.classList.remove('status-active');
+                const existingIndicator = balancerPPMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do Pacotes
+        const pacotesMenuItem = document.querySelector('.tw-submenu-item[data-action="pacotes"]');
+        if (pacotesMenuItem) {
+            const isActive = isPacotesActive();
+
+            if (isActive) {
+                pacotesMenuItem.classList.add('status-active');
+                if (!pacotesMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    pacotesMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                pacotesMenuItem.classList.remove('status-active');
+                const existingIndicator = pacotesMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+
+        // Atualiza status do Recrutamento de Nobres
+        const nobleRecruitmentMenuItem = document.querySelector('.tw-submenu-item[data-action="nobleRecruitment"]');
+        if (nobleRecruitmentMenuItem) {
+            const isActive = isNobleRecruitmentActive();
+
+            if (isActive) {
+                nobleRecruitmentMenuItem.classList.add('status-active');
+                if (!nobleRecruitmentMenuItem.querySelector('.status-indicator')) {
+                    const statusIndicator = document.createElement('div');
+                    statusIndicator.className = 'status-indicator';
+                    nobleRecruitmentMenuItem.appendChild(statusIndicator);
+                }
+            } else {
+                nobleRecruitmentMenuItem.classList.remove('status-active');
+                const existingIndicator = nobleRecruitmentMenuItem.querySelector('.status-indicator');
+                if (existingIndicator) existingIndicator.remove();
+            }
+        }
+    }
+
+    function startStatusCheck() {
+        setTimeout(updateIconStatus, 1000);
+        setInterval(updateIconStatus, 5000);
+        startSubmenuTimer();
+    }
+
+    function startSubmenuTimer() {
+        setTimeout(updateSubmenuTimer, 1500);
+        setInterval(updateSubmenuTimer, 1000);
+        
+        setTimeout(updateBalancerTimer, 1500);
+        setInterval(updateBalancerTimer, 1000);
+        
+        setTimeout(updateAutoReducaoTimer, 1500);
+        setInterval(updateAutoReducaoTimer, 1000);
+        
+        setTimeout(updateAccountManagerTimer, 1500);
+        setInterval(updateAccountManagerTimer, 1000);
+        
+        setTimeout(updateAutoFarmTimer, 1500);
+        setInterval(updateAutoFarmTimer, 1000);
+
+        setTimeout(updateBalancerPPTimer, 1500);
+        setInterval(updateBalancerPPTimer, 1000);
+
+        setTimeout(updatePacotesTimer, 1500);
+        setInterval(updatePacotesTimer, 1000);
+
+        setTimeout(updateNobleRecruitmentTimer, 1500);
+        setInterval(updateNobleRecruitmentTimer, 1000);
+
+        setTimeout(updateCunhagemTimer, 1500);
+        setInterval(updateCunhagemTimer, 1000);
+
+        setTimeout(updateCunhagemPersCoinsCounter, 1500);
+        setInterval(updateCunhagemPersCoinsCounter, 1000);
+
+        setTimeout(updatePuxarRecursosTimer, 1500);
+        setInterval(updatePuxarRecursosTimer, 1000);
+
+        // Escuta eventos de mudança de configuração para atualizar imediatamente
+        window.addEventListener('malboaBalancerConfigChanged', () => {
+            console.log('📡 [Menu] Config do Balanceador atualizada, atualizando timer...');
+            updateBalancerTimer();
+        });
+
+        window.addEventListener('malboaAutoDemolitionConfigChanged', () => {
+            console.log('📡 [Menu] Config do Auto-redução atualizada, atualizando timer...');
+            updateAutoReducaoTimer();
+        });
+
+        window.addEventListener('malboaBalancerPPConfigChanged', () => {
+            console.log('📡 [Menu] Config do Balanceador PP atualizada, atualizando timer...');
+            updateBalancerPPTimer();
+        });
+    }
+
+    function updateSubmenuTimer() {
+        try {
+            const timerElement = document.getElementById('submenuNextExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const coletaConfig = config.coletaEmMassa;
+
+            if (!coletaConfig || coletaConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = coletaConfig.periodo || 5;
+            const ultimaExecucao = coletaConfig.ultimaExecucao;
+
+            if (!ultimaExecucao) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+                return;
+            }
+
+            const agora = Date.now();
+            const ultimaExecucaoTime = parseInt(ultimaExecucao);
+            const proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+                
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer:', error);
+        }
+    }
+
+    function updateBalancerTimer() {
+        try {
+            const timerElement = document.getElementById('submenuBalancerExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const balancerConfig = config.balanceadorRecurso;
+
+            if (!balancerConfig || balancerConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = balancerConfig.periodo || 5;
+            const ultimaExecucao = balancerConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+            
+            if (!ultimaExecucao) {
+                // Se não há última execução, próxima é agora + período
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+                
+                // Se a próxima execução já passou, calcula a próxima baseada no período
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+                
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do balanceador:', error);
+        }
+    }
+
+    function updateAutoReducaoTimer() {
+        try {
+            const timerElement = document.getElementById('submenuAutoReducaoExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const autoReducaoConfig = config.autoReducao;
+
+            if (!autoReducaoConfig || autoReducaoConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = autoReducaoConfig.periodo || 60;
+            const ultimaExecucao = autoReducaoConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+            
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+                
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+                
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do auto-redução:', error);
+        }
+    }
+
+    function updateAccountManagerTimer() {
+        try {
+            const timerElement = document.getElementById('submenuAccountManagerExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const accountManagerConfig = config.gerenteContas;
+
+            if (!accountManagerConfig || accountManagerConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = accountManagerConfig.periodo || 5;
+            const ultimaExecucao = accountManagerConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+            
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+                
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+                
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do gerente de contas:', error);
+        }
+    }
+
+    function updateAutoFarmTimer() {
+        try {
+            const timerElement = document.getElementById('submenuAutoFarmExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const autoFarmConfig = config.autoFarm;
+
+            if (!autoFarmConfig || autoFarmConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = autoFarmConfig.periodo || 5;
+            const ultimaExecucao = autoFarmConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+            
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+                
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+                
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do AutoFarmador:', error);
+        }
+    }
+
+    function updateBalancerPPTimer() {
+        try {
+            const timerElement = document.getElementById('submenuBalancerPPExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const balancerPPConfig = config.balancerPP;
+
+            if (!balancerPPConfig || balancerPPConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = balancerPPConfig.periodo || 5;
+            const ultimaExecucao = balancerPPConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do Balanceador PP:', error);
+        }
+    }
+
+    function updatePacotesTimer() {
+        try {
+            const timerElement = document.getElementById('submenuPacotesExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const pacotesConfig = config.pacotes;
+
+            if (!pacotesConfig || pacotesConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            const periodo = pacotesConfig.periodo || 5;
+            const ultimaExecucao = pacotesConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do Pacotes:', error);
+        }
+    }
+
+    function updateNobleRecruitmentTimer() {
+        try {
+            const timerElement = document.getElementById('submenuNobleRecruitmentExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const nobleConfig = config.recrutamentoNobres;
+
+            if (!nobleConfig || nobleConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer';
+                return;
+            }
+
+            // Período em SEGUNDOS (não minutos)
+            const periodo = nobleConfig.periodo || 30;
+            const ultimaExecucao = nobleConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 1000); // segundos para ms
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 1000);
+
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const segundos = Math.ceil(tempoRestante / 1000);
+
+                // Mostra apenas segundos (formato simples)
+                timerElement.textContent = `${segundos}s`;
+
+                if (segundos <= 5) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (segundos <= 15) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do Recrutamento de Nobres:', error);
+        }
+    }
+
+    function updateCunhagemTimer() {
+        try {
+            const timerElement = document.getElementById('submenuCunhagemExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const cunhagemConfig = config.cunhagemEmMassa;
+
+            if (!cunhagemConfig || cunhagemConfig.executar !== true) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer timer-off';
+                return;
+            }
+
+            const periodo = cunhagemConfig.periodo || 60;
+            const ultimaExecucao = cunhagemConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer da Cunhagem:', error);
+        }
+    }
+
+    // ===== CONTADOR DE MOEDAS CUNHAGEM PERSONALIZADA =====
+    function updateCunhagemPersCoinsCounter() {
+        try {
+            const counterElement = document.getElementById('submenuCunhagemPersCoinsCounter');
+            if (!counterElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const cunhagemPersConfig = config.cunhagemPersonalizada || {};
+            const totalMoedas = cunhagemPersConfig.totalMoedas || 0;
+            const aldeias = cunhagemPersConfig.aldeias || [];
+
+            if (aldeias.length === 0) {
+                counterElement.textContent = '0';
+                counterElement.className = 'submenu-timer timer-off';
+            } else {
+                counterElement.textContent = `${parseInt(totalMoedas)}`;
+                counterElement.className = 'submenu-timer timer-active';
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar contador de moedas:', error);
+        }
+    }
+
+    function updatePuxarRecursosTimer() {
+        // ===== TIMER PUXAR RECURSOS =====
+        try {
+            const timerElement = document.getElementById('submenuPuxarRecursosExecutionTimer');
+            if (!timerElement) return;
+
+            const config = JSON.parse(localStorage.getItem('MalboaUtiliesConfig') || '{}');
+            const puxarRecursosConfig = config.puxarRecursos || {};
+
+            if (!puxarRecursosConfig.executar) {
+                timerElement.textContent = 'OFF';
+                timerElement.className = 'submenu-timer timer-off';
+                return;
+            }
+
+            const periodo = puxarRecursosConfig.periodo || 60;
+            const ultimaExecucao = puxarRecursosConfig.ultimaExecucao;
+            const agora = Date.now();
+
+            let proximaExecucaoTime;
+
+            if (!ultimaExecucao) {
+                proximaExecucaoTime = agora + (periodo * 60 * 1000);
+            } else {
+                const ultimaExecucaoTime = parseInt(ultimaExecucao);
+                proximaExecucaoTime = ultimaExecucaoTime + (periodo * 60 * 1000);
+
+                if (proximaExecucaoTime <= agora) {
+                    const timeSinceLastExecution = agora - ultimaExecucaoTime;
+                    const periodsPassed = Math.floor(timeSinceLastExecution / (periodo * 60 * 1000)) + 1;
+                    proximaExecucaoTime = ultimaExecucaoTime + (periodsPassed * periodo * 60 * 1000);
+                }
+            }
+
+            const tempoRestante = proximaExecucaoTime - agora;
+
+            if (tempoRestante <= 0) {
+                timerElement.textContent = '00:00';
+                timerElement.className = 'submenu-timer timer-active';
+            } else {
+                const minutos = Math.floor(tempoRestante / (60 * 1000));
+                const segundos = Math.floor((tempoRestante % (60 * 1000)) / 1000);
+
+                const tempoFormatado = `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}`;
+                timerElement.textContent = tempoFormatado;
+
+                if (minutos <= 1) {
+                    timerElement.className = 'submenu-timer timer-warning';
+                } else if (minutos <= 2) {
+                    timerElement.className = 'submenu-timer timer-active';
+                } else {
+                    timerElement.className = 'submenu-timer';
+                }
+            }
+        } catch (error) {
+            console.error('❌ [Menu] Erro ao atualizar timer do Puxar Recursos:', error);
+        }
+    }
+
+    async function loadMalboaEngine() {
+        try {
+            const ENGINE_URL = 'https://dl.dropbox.com/scl/fi/b7cox2u0mahxlm6n4lr2d/MalboaEngine.js?rlkey=j3wkmphoz0l08eknmigi7l2gl&dl=1';
+            
+            const response = await fetch(ENGINE_URL);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const script = await response.text();
+            const scriptElement = document.createElement('script');
+            scriptElement.textContent = script;
+            document.head.appendChild(scriptElement);
+            
+            console.log('🚀 [Engine] Carregado');
+        } catch (error) {
+            console.error('❌ [Engine] Erro ao carregar:', error);
+        }
+    }
+
 })();
 
 // --- Chong Tribe embutido ---
@@ -101,7 +3176,7 @@
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.34.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.34.1', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
