@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BR143 - Selecionar apoios por nick
 // @namespace    local.tribalwars.apoios
-// @version      1.2.1
+// @version      1.3.0
 // @description  Agrupa apoios por nick, mostra tropas atuais e previstas e aciona o botão de devolução do jogo.
 // @match        https://br143.tribalwars.com.br/game.php*
 // @run-at       document-idle
@@ -14,7 +14,29 @@
 
     const url = new URL(location.href);
     const aldeia = url.searchParams.get('village');
-    if (url.hostname !== 'br143.tribalwars.com.br' || url.searchParams.get('screen') !== 'place' || url.searchParams.get('mode') !== 'units' || !/^\d+$/.test(aldeia || '')) return;
+    const telaTropas = url.searchParams.get('screen') === 'place' && url.searchParams.get('mode') === 'units';
+    // getScript carrega por uma tag <script>; o Tampermonkey não usa este endereço como currentScript.
+    const pelaBarra = /^https:\/\/cdn\.jsdelivr\.net\/gh\/guijanuario\/chong-tribe-script-releases@[^/]+\/SelecionarApoiosPorNick\.user\.js(?:\?|$)/i.test(document.currentScript?.src || '');
+    if (url.hostname !== 'br143.tribalwars.com.br') {
+        if (pelaBarra) alert('Apoios por nick funciona no mundo BR143. Abra uma aldeia desse mundo para usar o atalho.');
+        return;
+    }
+    if (!/^\d+$/.test(aldeia || '')) {
+        if (pelaBarra) alert('Abra uma aldeia do BR143 antes de usar Apoios por nick.');
+        return;
+    }
+    if (!telaTropas) {
+        if (pelaBarra) {
+            const destino = new URL('/game.php', url.origin);
+            destino.searchParams.set('village', aldeia);
+            destino.searchParams.set('screen', 'place');
+            destino.searchParams.set('mode', 'units');
+            if (url.searchParams.has('t')) destino.searchParams.set('t', url.searchParams.get('t'));
+            alert('Abrindo a tela Tropas desta aldeia. Quando ela carregar, clique novamente no atalho Apoios por nick.');
+            location.assign(destino.href);
+        }
+        return;
+    }
     if (document.getElementById('apoios-por-nick')) return;
 
     const ID = 'apoios-por-nick';
