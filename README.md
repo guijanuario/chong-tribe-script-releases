@@ -7,10 +7,12 @@ Na tela **Praça de reunião → Tropas** (`screen=place&mode=units`) de qualque
 Crie um atalho na barra de acesso rápido do Tribal Wars e cole este código no campo do script:
 
 ```javascript
-javascript:$.getScript('https://cdn.jsdelivr.net/gh/guijanuario/chong-tribe-script-releases@main/SelecionarApoiosPorNick.user.js');
+javascript:$.getScript('https://cdn.jsdelivr.net/gh/guijanuario/chong-tribe-script-releases@2c60d713afcc0dc9bca2ce91180e5061632f8752/SelecionarApoiosPorNick.user.js');
 ```
 
 Você pode clicar no atalho em qualquer tela de uma aldeia do BR143. Se ainda não estiver em **Praça de reunião → Tropas**, ele avisa e abre essa tela da aldeia atual. **Depois que a página carregar, clique no atalho novamente** para mostrar o painel. Se já estiver na tela Tropas, o painel abre no primeiro clique. A seleção de um nick é feita em lote para evitar travamentos.
+
+O endereço acima aponta para a versão publicada `1.3.0`, para evitar que o cache da CDN carregue uma versão anterior. Ao publicar uma nova versão, atualize o endereço do atalho para o novo commit.
 
 O script atua somente no mundo **br143** e nessa tela de tropas. Ele não envia nada ao selecionar um nick; revise as tropas e a previsão antes de clicar em **Enviar de volta**.
 
