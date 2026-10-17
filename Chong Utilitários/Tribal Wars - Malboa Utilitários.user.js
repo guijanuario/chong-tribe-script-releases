@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.7.1
+// @version      4.8.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.40.1', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.41.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10044,6 +10044,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             fullMessage: { operationName: 'MATA *TEM*', minimums: { axe: 4000, light: 2000, ram: 200 }, note: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' },
             missingPlayers: [],
             fakePlayerRules: new Map(),
+            fullPlayerRules: new Map(),
+            fullPlayerUsage: [],
             worldVillages: [],
             targetPointsWarning: '',
             runSequence: 0
@@ -10131,6 +10133,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return rules;
         }
 
+        function parseFullPlayerRules(value) {
+            const rules = new Map();
+            String(value || '').split(/\n+/).forEach((rawLine) => {
+                const line = rawLine.trim();
+                if (!line) return;
+                const percentageMatch = line.match(/^(.*?)(?:\s*[;:=|]\s*)(\d{1,3})\s*%?\s*$/);
+                const displayName = (percentageMatch?.[1] || line).trim();
+                const normalized = normalizeName(displayName);
+                if (!normalized) return;
+                const percentage = percentageMatch ? Math.min(100, Math.max(1, num(percentageMatch[2]))) : 100;
+                rules.set(normalized, { name: displayName, percentage });
+            });
+            return rules;
+        }
+
         function distance(a, b) {
             return Math.hypot(Number(a.x) - Number(b.x), Number(a.y) - Number(b.y));
         }
@@ -10181,6 +10198,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     includeContinents: '',
                     excludeContinents: '',
                     playerBlacklist: '',
+                    fullPlayerUsage: '',
                     strategy: 'balanced-nearest',
                     operationAt: '',
                     operationName: 'MATA *TEM*',
@@ -10192,7 +10210,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     ...JSON.parse(localStorage.getItem(configKey()) || '{}')
                 };
             } catch (_error) {
-                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, fakePlayers: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
+                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, fakePlayers: '', fullPlayerUsage: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
             }
         }
 
@@ -10295,6 +10313,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 includeContinents: panel.querySelector('[name="include_continents"]').value,
                 excludeContinents: panel.querySelector('[name="exclude_continents"]').value,
                 playerBlacklist: panel.querySelector('[name="player_blacklist"]').value,
+                fullPlayerUsage: panel.querySelector('[name="full_player_usage"]').value,
                 strategy: panel.querySelector('[name="strategy"]').value,
                 operationAt: panel.querySelector('[name="operation_at"]').value,
                 operationName: panel.querySelector('[name="operation_name"]').value,
@@ -10407,11 +10426,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return sorted[0];
         }
 
-        function buildPlan(candidates, targets, strategy) {
-            const pool = [...candidates];
+        function buildPlan(candidates, targets, strategy, playerRules = new Map()) {
             const assignments = [];
             const assignedByTarget = new Map(targets.map((target) => [target.coordinate, 0]));
-            const assignOne = (target) => {
+            const assignOne = (pool, target) => {
                 const source = chooseSource(pool, target, strategy);
                 if (!source) return false;
                 pool.splice(pool.indexOf(source), 1);
@@ -10420,8 +10438,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 return true;
             };
 
+            const usage = [];
+            playerRules.forEach((rule, normalizedName) => {
+                const playerPool = candidates.filter((source) => normalizeName(source.playerName) === normalizedName);
+                const requested = Math.min(playerPool.length, Math.ceil(playerPool.length * rule.percentage / 100));
+                let assigned = 0;
+                targets.forEach((target) => {
+                    while (assigned < requested && assignedByTarget.get(target.coordinate) < target.count && assignOne(playerPool, target)) assigned += 1;
+                });
+                usage.push({ name: rule.name, percentage: rule.percentage, available: candidates.filter((source) => normalizeName(source.playerName) === normalizedName).length, requested, assigned });
+            });
+
+            const reservedNames = new Set(playerRules.keys());
+            const pool = candidates.filter((source) => !reservedNames.has(normalizeName(source.playerName)));
             targets.forEach((target) => {
-                while (assignedByTarget.get(target.coordinate) < target.count && assignOne(target)) {
+                while (assignedByTarget.get(target.coordinate) < target.count && assignOne(pool, target)) {
                     // Sempre conclui o alvo de maior pontuação antes de passar ao seguinte.
                 }
             });
@@ -10431,7 +10462,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 assigned: assignedByTarget.get(target.coordinate),
                 missing: Math.max(0, target.count - assignedByTarget.get(target.coordinate))
             }));
-            return { assignments, missing, unused: pool };
+            return { assignments, missing, unused: pool, usage };
         }
 
         function buildFakePlan(candidates, targets) {
@@ -10605,8 +10636,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function renderPlayerFullSummary() {
             const grouped = new Map();
             state.candidates.forEach((source) => grouped.set(source.playerName, (grouped.get(source.playerName) || 0) + 1));
+            const assigned = new Map();
+            state.assignments.forEach((item) => assigned.set(item.source.playerName, (assigned.get(item.source.playerName) || 0) + 1));
             const rows = [...grouped.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-            return `<section><div class="cmo-section-head"><div><h3>Fulls por jogador</h3><small>Quantidade de aldeias que atingiram os mínimos usando o total na origem + fora.</small></div><strong>${rows.length} jogador(es)</strong></div><div class="cmo-player-summary">${rows.map(([playerName, count]) => `<span><b>${escapeHtml(playerName)}</b><strong>${formatNumber(count)}</strong></span>`).join('') || '<div class="cmo-empty">Nenhum jogador possui aldeia dentro do padrão configurado.</div>'}</div></section>`;
+            return `<section><div class="cmo-section-head"><div><h3>Fulls por jogador</h3><small>Quantidade designada / disponível. Regras percentuais são reservadas antes da distribuição normal.</small></div><strong>${rows.length} jogador(es)</strong></div><div class="cmo-player-summary">${rows.map(([playerName, count]) => { const rule = state.fullPlayerRules.get(normalizeName(playerName)); return `<span><b>${escapeHtml(playerName)}</b>${rule ? `<em>Regra: ${rule.percentage}%</em>` : ''}<strong>${formatNumber(assigned.get(playerName) || 0)} / ${formatNumber(count)} full(s)</strong></span>`; }).join('') || '<div class="cmo-empty">Nenhum jogador possui aldeia dentro do padrão configurado.</div>'}</div></section>`;
         }
 
         function renderFakePlayerSummary() {
@@ -10654,7 +10687,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const assignedPlayers = new Set(state.assignments.map((item) => item.source.playerName)).size;
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(state.candidates.length)}</strong><span>Fulls encontrados</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos</span></div><div><strong>${formatNumber(requested)}</strong><span>Fulls solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(state.assignments.length) : '—'}</strong><span>Fulls distribuídos</span></div><div class="${planned && totalMissing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(totalMissing) : '—'}</strong><span>Fulls faltantes</span></div><div><strong>${planned ? formatNumber(assignedPlayers) : '—'}</strong><span>Jogadores envolvidos</span></div></div>
-                <div class="cmo-data-info">Tropas salvas em <strong>${escapeHtml(state.payload?.savedAt ? new Date(state.payload.savedAt).toLocaleString('pt-BR') : 'data desconhecida')}</strong>. Cada aldeia ofensiva é utilizada no máximo uma vez.${offensiveNotice}${planned ? '' : '<br><strong>Mapeamento concluído. Para reservar os fulls nos alvos, clique em “Montar operação”.</strong>'}${state.targetPointsWarning ? `<br><strong class="cmo-warning">${escapeHtml(state.targetPointsWarning)}</strong>` : ''}</div>
+                <div class="cmo-data-info">Tropas salvas em <strong>${escapeHtml(state.payload?.savedAt ? new Date(state.payload.savedAt).toLocaleString('pt-BR') : 'data desconhecida')}</strong>. Cada aldeia ofensiva é utilizada no máximo uma vez. Jogadores com percentual configurado são atendidos primeiro; os demais dividem o restante.${offensiveNotice}${planned ? '' : '<br><strong>Mapeamento concluído. Para reservar os fulls nos alvos, clique em “Montar operação”.</strong>'}${state.targetPointsWarning ? `<br><strong class="cmo-warning">${escapeHtml(state.targetPointsWarning)}</strong>` : ''}</div>
                 ${renderPlayerFullSummary()}
                 ${renderMap()}
                 ${renderCandidates()}
@@ -10752,14 +10785,17 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 }
                 state.missingPlayers = [];
                 state.candidates = buildCandidates(config);
+                state.fullPlayerRules = parseFullPlayerRules(config.fullPlayerUsage);
+                state.fullPlayerUsage = [];
                 state.targets = parseTargets(config.targets, config.defaultFulls);
                 await loadTargetPointsAndCounts(state.targets, config);
                 if (runId !== state.runSequence) return;
                 state.missing = state.targets.map((target) => ({ target, assigned: 0, missing: target.count }));
                 if (planned && state.targets.length) {
-                    const plan = buildPlan(state.candidates, state.targets, config.strategy);
+                    const plan = buildPlan(state.candidates, state.targets, config.strategy, state.fullPlayerRules);
                     state.assignments = plan.assignments;
                     state.missing = plan.missing;
+                    state.fullPlayerUsage = plan.usage;
                     state.messages = buildMessages();
                 }
                 renderResults(config, planned && state.targets.length > 0);
@@ -10828,7 +10864,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     <div class="cmo-card" data-mode-only="fakes"><strong>Jogadores que receberão os fakes</strong><label><span>Um por linha — formato NICK; QUANTIDADE DE ALVOS</span><textarea name="fake_players" placeholder="Chonguera; 10\nTREVORWARSs; 8\nDurock">${escapeHtml(config.fakePlayers || '')}</textarea></label><small class="cmo-target-help"><strong>Com número:</strong> recebe até aquela quantidade de aldeias-alvo. <strong>Sem número:</strong> divide automaticamente os alvos que sobrarem. A forma antiga “Jogador1; Jogador2” continua aceita.</small></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Definição dinâmica de full — mínimos totais (aldeia + fora)</strong><div class="cmo-unit-grid">${state.units.length ? state.units.map((unit) => `<label><span>${escapeHtml(unit.label)}</span><input type="number" min="0" step="1" data-unit="${unit.id}" value="${num(config.thresholds?.[unit.id] ?? unit.default)}" placeholder="0 = ignorar"></label>`).join('') : '<span>Carregue as tropas para detectar as unidades deste mundo.</span>'}</div></div>
                     <div class="cmo-card"><strong>Alvos da operação</strong><label><span>Coordenadas — uma por linha; quantidade individual opcional</span><textarea name="targets" placeholder="500|500\n501|501; 8">${escapeHtml(config.targets || '')}</textarea></label><small class="cmo-target-help" data-mode-only="fakes">Ex.: 501|501; 8 solicita 8 fakes para esse alvo. Sem número, usa a quantidade padrão abaixo.</small><small class="cmo-target-help" data-mode-only="fulls">Ex.: 501|501; 8 solicita 8 fulls somente para esse alvo.</small><div data-mode-only="fakes"><label><span>Quantidade padrão de fakes por aldeia-alvo</span><input type="number" min="1" name="default_fakes" value="${Math.max(1, num(config.defaultFakes || 1))}"></label></div><div data-mode-only="fulls"><label><span>Como definir a quantidade</span><select name="quantity_mode"><option value="fixed" ${config.quantityMode !== 'points' ? 'selected' : ''}>Quantidade padrão para todos</option><option value="points" ${config.quantityMode === 'points' ? 'selected' : ''}>Usar quantidades definidas por faixa de pontos</option></select></label><label><span>Quantidade padrão de fulls por alvo (também usada como fallback)</span><input type="number" min="1" name="default_fulls" value="${Math.max(1, num(config.defaultFulls || 5))}"></label><div class="cmo-point-rules"><strong>Quantidades desta operação — preencha os três campos</strong><label><span>Abaixo de 6.000 pontos</span><input type="number" min="1" name="point_fulls_low" value="${num(config.pointFulls?.low) || ''}" placeholder="Ex.: 5"></label><label><span>De 6.000 a 9.000</span><input type="number" min="1" name="point_fulls_medium" value="${num(config.pointFulls?.medium) || ''}" placeholder="Ex.: 8 a 11"></label><label><span>Acima de 9.000 pontos</span><input type="number" min="1" name="point_fulls_high" value="${num(config.pointFulls?.high) || ''}" placeholder="Ex.: 12 a 15"></label></div></div></div>
-                    <div class="cmo-card" data-mode-only="fulls"><strong>Filtros das aldeias de origem</strong><div class="cmo-unit-grid"><label><span>Permitir somente estes continentes</span><input name="include_continents" value="${escapeHtml(config.includeContinents || '')}" placeholder="Vazio = permitir todos"></label><label><span>Nunca utilizar estes continentes</span><input name="exclude_continents" value="${escapeHtml(config.excludeContinents || '')}" placeholder="Ex.: K55; K65"></label></div><small class="cmo-target-help">A primeira caixa limita as origens aos continentes informados. A segunda sempre remove os continentes informados.</small><label><span>Ignorar jogadores de origem — separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Jogador1; Jogador2">${escapeHtml(config.playerBlacklist || '')}</textarea></label></div>
+                    <div class="cmo-card" data-mode-only="fulls"><strong>Filtros e uso das aldeias de origem</strong><div class="cmo-unit-grid"><label><span>Permitir somente estes continentes</span><input name="include_continents" value="${escapeHtml(config.includeContinents || '')}" placeholder="Vazio = permitir todos"></label><label><span>Nunca utilizar estes continentes</span><input name="exclude_continents" value="${escapeHtml(config.excludeContinents || '')}" placeholder="Ex.: K55; K65"></label></div><small class="cmo-target-help">A primeira caixa limita as origens aos continentes informados. A segunda sempre remove os continentes informados.</small><label><span>Ignorar jogadores de origem — separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Jogador1; Jogador2">${escapeHtml(config.playerBlacklist || '')}</textarea></label><label><span>Percentual de fulls reservado por jogador — um por linha</span><textarea name="full_player_usage" placeholder="Chonguera; 100\nJogador2; 50">${escapeHtml(config.fullPlayerUsage || '')}</textarea></label><small class="cmo-target-help">Formato: NICK; PERCENTUAL. Ex.: Chonguera; 100 reserva primeiro todos os fulls encontrados de Chonguera. Jogadores não informados dividem o restante.</small></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Texto enviado nas MPs de full</strong><label><span>Nome da operação</span><input name="operation_name" value="${escapeHtml(config.operationName || 'MATA *TEM*')}" placeholder="Ex.: MATA *TEM*"></label><div class="cmo-unit-grid"><label><span>Bárbaros solicitados na MP</span><input type="number" min="0" name="message_min_axe" value="${num(config.messageMinimums?.axe ?? 4000)}"></label><label><span>Cavalarias leves solicitadas</span><input type="number" min="0" name="message_min_light" value="${num(config.messageMinimums?.light ?? 2000)}"></label><label><span>Aríetes solicitados</span><input type="number" min="0" name="message_min_ram" value="${num(config.messageMinimums?.ram ?? 200)}"></label></div><label><span>Observação após o padrão mínimo</span><textarea name="full_message_note">${escapeHtml(config.fullMessageNote || 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....')}</textarea></label><small class="cmo-target-help">Esses valores alteram somente o texto da MP. Os mínimos usados para localizar fulls continuam sendo os campos do primeiro quadro.</small></div>
                     <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" step="1" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa no formato HH:mm:ss:milissegundos.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. As metas individuais são preenchidas primeiro; depois, jogadores sem meta dividem o restante.</div></div>
                     <div class="cmo-actions"><button type="button" class="btn" data-action="map-fulls" data-mode-only="fulls">Mapear fulls</button><button type="button" class="btn cmo-primary" data-action="plan">Distribuir fakes</button><button type="button" class="btn" data-action="export-csv" disabled>Exportar CSV</button></div>
