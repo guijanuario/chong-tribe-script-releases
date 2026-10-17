@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.5.0
+// @version      4.6.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.38.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.39.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10039,6 +10039,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             fullMessage: { operationName: 'MATA *TEM*', minimums: { axe: 4000, light: 2000, ram: 200 }, note: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' },
             missingPlayers: [],
             fakePlayerRules: new Map(),
+            worldVillages: [],
             targetPointsWarning: '',
             runSequence: 0
         };
@@ -10215,6 +10216,22 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return num(pointFulls.high);
         }
 
+        async function loadWorldVillages() {
+            if (state.worldVillages.length) return state.worldVillages;
+            const response = await fetch('/map/village.txt', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const text = await response.text();
+            state.worldVillages = text.split(/\r?\n/).map((line) => {
+                if (!line) return null;
+                const fields = line.split(',');
+                const x = Number(fields[2]);
+                const y = Number(fields[3]);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+                return { id: fields[0], x, y, coordinate: `${x}|${y}`, points: num(fields[5]) };
+            }).filter(Boolean);
+            return state.worldVillages;
+        }
+
         async function loadTargetPointsAndCounts(targets, config) {
             state.targetPointsWarning = '';
             const usesPointQuantities = config.quantityMode === 'points' && targets.some((target) => !target.explicitCount);
@@ -10224,15 +10241,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             if (!targets.length) return targets;
             const wanted = new Set(targets.map((target) => target.coordinate));
             try {
-                const response = await fetch('/map/village.txt', { credentials: 'same-origin' });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const text = await response.text();
                 const pointsByCoordinate = new Map();
-                text.split(/\r?\n/).forEach((line) => {
-                    if (!line) return;
-                    const fields = line.split(',');
-                    const coordinate = `${fields[2]}|${fields[3]}`;
-                    if (wanted.has(coordinate)) pointsByCoordinate.set(coordinate, num(fields[5]));
+                (await loadWorldVillages()).forEach((village) => {
+                    if (wanted.has(village.coordinate)) pointsByCoordinate.set(village.coordinate, village.points);
                 });
                 targets.forEach((target) => {
                     const points = pointsByCoordinate.get(target.coordinate);
@@ -10528,12 +10539,31 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const width = Math.max(...xs) - Math.min(...xs) + margin * 2;
             const height = Math.max(...ys) - Math.min(...ys) + margin * 2;
             const radius = Math.max(.4, Math.min(1.2, span / 140));
+            const maxX = minX + width;
+            const maxY = minY + height;
+            const highlightedCoordinates = new Set(points.map((point) => point.coordinate));
+            const visibleWorldVillages = state.worldVillages.filter((village) => village.x >= minX && village.x <= maxX && village.y >= minY && village.y <= maxY && !highlightedCoordinates.has(village.coordinate));
+            const backgroundLimit = 12000;
+            const backgroundStep = Math.max(1, Math.ceil(visibleWorldVillages.length / backgroundLimit));
+            const backgroundDots = visibleWorldVillages.filter((_village, index) => index % backgroundStep === 0).map((village) => `<circle class="cmo-background-village" cx="${village.x}" cy="${village.y}" r="${Math.max(.12, radius * .42)}"><title>${escapeHtml(`Aldeia ao redor · ${village.coordinate}`)}</title></circle>`).join('');
+            const continentLines = [];
+            for (let x = Math.ceil(minX / 100) * 100; x <= maxX; x += 100) continentLines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}"></line>`);
+            for (let y = Math.ceil(minY / 100) * 100; y <= maxY; y += 100) continentLines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}"></line>`);
+            const continentLabels = [];
+            const continentFontSize = Math.max(2.8, Math.min(8, span / 30));
+            for (let continentY = Math.floor(minY / 100); continentY <= Math.floor(maxY / 100); continentY += 1) {
+                for (let continentX = Math.floor(minX / 100); continentX <= Math.floor(maxX / 100); continentX += 1) {
+                    const labelX = Math.max(minX + 2, continentX * 100 + 3);
+                    const labelY = Math.max(minY + continentFontSize, continentY * 100 + continentFontSize + 2);
+                    continentLabels.push(`<text x="${labelX}" y="${labelY}" font-size="${continentFontSize}">K${continentY}${continentX}</text>`);
+                }
+            }
             const assignedSourceCoords = new Set(state.assignments.map((item) => item.source.coordinate));
             const lines = state.assignments.map((item) => `<line x1="${item.source.x}" y1="${item.source.y}" x2="${item.target.x}" y2="${item.target.y}"><title>${escapeHtml(`${item.source.coordinate} → ${item.target.coordinate}`)}</title></line>`).join('');
             const sourceDots = sources.map((source) => `<a href="${escapeHtml(villageUrl(source))}" target="_blank"><circle class="cmo-source ${assignedSourceCoords.has(source.coordinate) ? 'cmo-assigned' : ''}" cx="${source.x}" cy="${source.y}" r="${radius}"><title>${escapeHtml(`${source.playerName} · ${source.coordinate} · ${assignedSourceCoords.has(source.coordinate) ? (fakeMode ? 'referência escolhida' : 'designada') : (fakeMode ? 'aldeia do jogador' : 'full disponível')}`)}</title></circle></a>`).join('');
             const targetDots = targets.map((target) => `<a href="${escapeHtml(mapUrl(target))}" target="_blank"><circle class="cmo-target" cx="${target.x}" cy="${target.y}" r="${radius * 1.45}"><title>${escapeHtml(`ALVO ${target.coordinate} · ${target.count} ${fakeMode ? 'fake(s)' : 'full(s)'} solicitado(s)`)}</title></circle></a>`).join('');
-            const legend = fakeMode ? 'Azul: aldeias dos jogadores escolhidos · verde: referência mais próxima · vermelho: alvo' : 'Azul: full disponível · verde: full designado · vermelho: alvo';
-            return `<section class="cmo-map-card"><div class="cmo-section-head"><div><h3>Mapa da operação</h3><small>${legend}</small></div></div><div class="cmo-map-wrap"><svg viewBox="${minX} ${minY} ${width} ${height}" preserveAspectRatio="xMidYMid meet"><g class="cmo-lines">${lines}</g><g>${sourceDots}</g><g>${targetDots}</g></svg></div></section>`;
+            const legend = fakeMode ? 'Cinza: aldeias ao redor · azul: aldeias dos jogadores · verde: referência escolhida · vermelho: alvo' : 'Cinza: aldeias ao redor · azul: full disponível · verde: full designado · vermelho: alvo';
+            return `<section class="cmo-map-card"><div class="cmo-section-head"><div><h3>Mapa da operação</h3><small>${legend} · linhas grossas: limites dos continentes</small></div></div><div class="cmo-map-wrap"><svg viewBox="${minX} ${minY} ${width} ${height}" preserveAspectRatio="xMidYMid meet"><g class="cmo-world-villages">${backgroundDots}</g><g class="cmo-continent-grid">${continentLines.join('')}${continentLabels.join('')}</g><g class="cmo-lines">${lines}</g><g>${sourceDots}</g><g>${targetDots}</g></svg></div></section>`;
         }
 
         function renderCandidates() {
@@ -10668,6 +10698,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 if (config.operationMode === 'fakes') {
                     state.candidates = buildFakeCandidates(config);
                     state.targets = parseTargets(config.targets, config.defaultFakes);
+                    try {
+                        await loadWorldVillages();
+                    } catch (error) {
+                        console.warn('[Montador de Operações] Não foi possível carregar as aldeias de fundo do mapa:', error);
+                    }
+                    if (runId !== state.runSequence) return;
                     state.missing = state.targets.map((target) => ({ target, assigned: 0, missing: target.count }));
                     if (planned && state.targets.length) {
                         const plan = buildFakePlan(state.candidates, state.targets);
@@ -10714,7 +10750,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 #${SCRIPT_ID} .cmo-data-info{padding:7px;border-left:4px solid #95631c;background:#fff8e5}#${SCRIPT_ID} .cmo-warning{color:#a01818}#${SCRIPT_ID} .cmo-section-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px;background:#d9b56f}#${SCRIPT_ID} .cmo-section-head small{display:block;margin-top:2px;color:#65451e}#${SCRIPT_ID} .cmo-head-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
                 #${SCRIPT_ID} .cmo-player-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:5px;padding:8px}#${SCRIPT_ID} .cmo-player-summary span{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:6px 8px;border:1px solid #d3b274;background:#fff8e5}#${SCRIPT_ID} .cmo-player-summary span>strong{color:#23750d}#${SCRIPT_ID} .cmo-player-summary span>em{font-size:10px;color:#705638;font-style:normal}
                 #${SCRIPT_ID} .cmo-table-wrap{max-height:390px;overflow:auto}#${SCRIPT_ID} .cmo-table{width:100%;margin:0;border-collapse:collapse}#${SCRIPT_ID} .cmo-table th,#${SCRIPT_ID} .cmo-table td{padding:4px 6px;text-align:center;white-space:nowrap}#${SCRIPT_ID} .cmo-row-missing{background:#f8d9cf}
-                #${SCRIPT_ID} .cmo-map-wrap{height:430px;background:#e5d29e}#${SCRIPT_ID} .cmo-map-wrap svg{display:block;width:100%;height:100%}#${SCRIPT_ID} .cmo-lines line{stroke:#76552c;stroke-width:.35;stroke-dasharray:1 .7;vector-effect:non-scaling-stroke;opacity:.45}#${SCRIPT_ID} .cmo-source{fill:#3276b1;stroke:#fff;stroke-width:.25;vector-effect:non-scaling-stroke;cursor:pointer}#${SCRIPT_ID} .cmo-source.cmo-assigned{fill:#238b45}#${SCRIPT_ID} .cmo-target{fill:#c52d2d;stroke:#fff;stroke-width:.35;vector-effect:non-scaling-stroke;cursor:pointer}
+                #${SCRIPT_ID} .cmo-map-wrap{height:430px;background:#e5d29e}#${SCRIPT_ID} .cmo-map-wrap svg{display:block;width:100%;height:100%}#${SCRIPT_ID} .cmo-background-village{fill:#7d7d7d;opacity:.55;stroke:#555;stroke-width:.1;vector-effect:non-scaling-stroke}#${SCRIPT_ID} .cmo-continent-grid line{stroke:#4b3217;stroke-width:2;vector-effect:non-scaling-stroke;opacity:.78}#${SCRIPT_ID} .cmo-continent-grid text{fill:#4b3217;font-weight:bold;paint-order:stroke;stroke:#f4e4bc;stroke-width:.8;vector-effect:non-scaling-stroke;pointer-events:none}#${SCRIPT_ID} .cmo-lines line{stroke:#76552c;stroke-width:.35;stroke-dasharray:1 .7;vector-effect:non-scaling-stroke;opacity:.45}#${SCRIPT_ID} .cmo-source{fill:#3276b1;stroke:#fff;stroke-width:.25;vector-effect:non-scaling-stroke;cursor:pointer}#${SCRIPT_ID} .cmo-source.cmo-assigned{fill:#238b45}#${SCRIPT_ID} .cmo-target{fill:#c52d2d;stroke:#fff;stroke-width:.35;vector-effect:non-scaling-stroke;cursor:pointer}
                 #${SCRIPT_ID} .cmo-messages{display:grid;grid-template-columns:repeat(auto-fit,minmax(390px,1fr));gap:9px;padding:9px}#${SCRIPT_ID} .cmo-messages article{border:1px solid #a47738;background:#fff8e5}#${SCRIPT_ID} .cmo-messages header{display:flex;justify-content:space-between;align-items:center;padding:6px;background:#e4c488}#${SCRIPT_ID} .cmo-messages textarea{height:190px;border:0;border-top:1px solid #a47738;font:11px/1.35 Consolas,monospace}
                 #${SCRIPT_ID} .cmo-empty,#${SCRIPT_ID} .cmo-error{margin-top:10px;padding:14px;text-align:center;border:1px dashed #b48a45;background:#fff4d6}#${SCRIPT_ID} .cmo-error{color:#991b1b;border-color:#b5362e;background:#f9ded7}
                 @media(max-width:900px){#${SCRIPT_ID} .cmo-form{grid-template-columns:1fr}#${SCRIPT_ID} .cmo-mode-card{grid-column:1;grid-template-columns:1fr}#${SCRIPT_ID} .cmo-actions{grid-column:1}#${SCRIPT_ID} .cmo-messages{grid-template-columns:1fr}#${SCRIPT_ID} .cmo-map-wrap{height:330px}#${SCRIPT_ID} .cmo-point-rules{grid-template-columns:1fr}}
