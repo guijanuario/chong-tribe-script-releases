@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.3.0
+// @version      4.3.1
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.36.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.36.1', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10371,15 +10371,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     const source = [...player.villages].sort((a, b) => distance(a, target) - distance(b, target))[0];
                     return { player, source, distance: distance(source, target) };
                 });
-                const nearestDistance = Math.min(...options.map((option) => option.distance));
-                const nearbyLimit = nearestDistance * 1.2 + 5;
-                const nearby = options.filter((option) => option.distance <= nearbyLimit).sort((a, b) =>
+                const balanced = options.sort((a, b) =>
                     a.player.assignedFakes - b.player.assignedFakes
                     || a.player.assignedTargets - b.player.assignedTargets
                     || a.distance - b.distance
                     || a.player.playerName.localeCompare(b.player.playerName)
                 );
-                const chosen = nearby[0] || options.sort((a, b) => a.distance - b.distance)[0];
+                const chosen = balanced[0];
                 if (!chosen) return;
                 chosen.player.assignedFakes += target.count;
                 chosen.player.assignedTargets += 1;
@@ -10510,7 +10508,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 row.fakes += item.fakeCount;
             });
             const rows = [...grouped.entries()].sort((a, b) => b[1].fakes - a[1].fakes || a[0].localeCompare(b[0]));
-            return `<section><div class="cmo-section-head"><div><h3>Jogadores escolhidos</h3><small>A proximidade usa todas as aldeias salvas desses jogadores; a divisão também equilibra a carga de fakes.</small></div><strong>${rows.length} jogador(es)</strong></div><div class="cmo-player-summary">${rows.map(([playerName, totals]) => `<span><b>${escapeHtml(playerName)}</b><em>${formatNumber(totals.villages)} aldeias</em><strong>${formatNumber(totals.fakes)} fake(s) · ${formatNumber(totals.targets)} alvo(s)</strong></span>`).join('')}</div></section>`;
+            return `<section><div class="cmo-section-head"><div><h3>Jogadores escolhidos</h3><small>Todos participam da divisão. As aldeias salvas são usadas somente para apontar a referência mais próxima de cada alvo.</small></div><strong>${rows.length} jogador(es)</strong></div><div class="cmo-player-summary">${rows.map(([playerName, totals]) => `<span><b>${escapeHtml(playerName)}</b><em>${formatNumber(totals.villages)} aldeias</em><strong>${formatNumber(totals.fakes)} fake(s) · ${formatNumber(totals.targets)} alvo(s)</strong></span>`).join('')}</div></section>`;
         }
 
         function renderFakeResults(config, planned) {
@@ -10522,7 +10520,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const missingNotice = state.missingPlayers.length ? `<div class="cmo-error">Nicks não encontrados nos dados salvos: <strong>${state.missingPlayers.map(escapeHtml).join(', ')}</strong>. Confira a grafia ou atualize “Tropas da Tribo”.</div>` : '';
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(new Set(state.candidates.map((item) => item.playerName)).size)}</strong><span>Jogadores encontrados</span></div><div><strong>${formatNumber(state.candidates.length)}</strong><span>Aldeias usadas na distância</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos</span></div><div><strong>${formatNumber(requested)}</strong><span>Fakes solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(assigned) : '—'}</strong><span>Fakes distribuídos</span></div><div class="${planned && totalMissing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(totalMissing) : '—'}</strong><span>Fakes faltantes</span></div><div><strong>${planned ? formatNumber(assignedPlayers) : '—'}</strong><span>Jogadores envolvidos</span></div></div>
-                <div class="cmo-data-info">A distribuição considera a localização das aldeias salvas para cada nick, aproxima primeiro os jogadores mais perto dos alvos e equilibra a quantidade pedida. A aldeia exibida é somente uma <strong>referência geográfica</strong>; o jogador escolhe de onde enviará.${planned ? '' : '<br><strong>Preencha os alvos e clique em “Distribuir fakes”.</strong>'}</div>
+                <div class="cmo-data-info">A distribuição divide a carga de fakes igualmente entre todos os nicks informados. A localização não decide quem participa; ela serve apenas para mostrar a aldeia de referência mais próxima do alvo para cada jogador. O jogador escolhe de onde enviará.${planned ? '' : '<br><strong>Preencha os alvos e clique em “Distribuir fakes”.</strong>'}</div>
                 ${missingNotice}
                 ${renderFakePlayerSummary()}
                 ${renderMap()}
@@ -10675,7 +10673,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const planButton = panel.querySelector('[data-action="plan"]');
             const empty = panel.querySelector('.cmo-results');
             if (mode === 'fakes') {
-                intro.innerHTML = 'Distribui <strong>coordenadas de fake</strong> somente entre os nicks informados, considerando a localização das aldeias e equilibrando a carga. Gera uma MP por jogador com alvo, quantidade e horário de chegada. Nenhum ataque é enviado automaticamente.';
+                intro.innerHTML = 'Distribui <strong>coordenadas de fake</strong> igualmente entre todos os nicks informados. A localização serve apenas como referência da aldeia mais próxima de cada jogador. Gera uma MP por jogador com alvo, quantidade e horário de chegada. Nenhum ataque é enviado automaticamente.';
                 planButton.textContent = 'Distribuir fakes';
                 if (!state.assignments.length) empty.innerHTML = '<div class="cmo-empty">Informe os jogadores, os alvos, a quantidade de fakes e o horário. Depois clique em “Distribuir fakes”.</div>';
             } else {
@@ -10701,7 +10699,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     <div class="cmo-card" data-mode-only="fulls"><strong>Definição dinâmica de full — mínimos totais (aldeia + fora)</strong><div class="cmo-unit-grid">${state.units.length ? state.units.map((unit) => `<label><span>${escapeHtml(unit.label)}</span><input type="number" min="0" step="1" data-unit="${unit.id}" value="${num(config.thresholds?.[unit.id] ?? unit.default)}" placeholder="0 = ignorar"></label>`).join('') : '<span>Carregue as tropas para detectar as unidades deste mundo.</span>'}</div></div>
                     <div class="cmo-card"><strong>Alvos da operação</strong><label><span>Coordenadas — uma por linha; quantidade individual opcional</span><textarea name="targets" placeholder="500|500\n501|501; 8">${escapeHtml(config.targets || '')}</textarea></label><small class="cmo-target-help" data-mode-only="fakes">Ex.: 501|501; 8 solicita 8 fakes para esse alvo. Sem número, usa a quantidade padrão abaixo.</small><small class="cmo-target-help" data-mode-only="fulls">Ex.: 501|501; 8 solicita 8 fulls somente para esse alvo.</small><div data-mode-only="fakes"><label><span>Quantidade padrão de fakes por aldeia-alvo</span><input type="number" min="1" name="default_fakes" value="${Math.max(1, num(config.defaultFakes || 1))}"></label></div><div data-mode-only="fulls"><label><span>Como definir a quantidade</span><select name="quantity_mode"><option value="fixed" ${config.quantityMode !== 'points' ? 'selected' : ''}>Quantidade padrão para todos</option><option value="points" ${config.quantityMode === 'points' ? 'selected' : ''}>Usar quantidades definidas por faixa de pontos</option></select></label><label><span>Quantidade padrão de fulls por alvo (também usada como fallback)</span><input type="number" min="1" name="default_fulls" value="${Math.max(1, num(config.defaultFulls || 5))}"></label><div class="cmo-point-rules"><strong>Quantidades desta operação — preencha os três campos</strong><label><span>Abaixo de 6.000 pontos</span><input type="number" min="1" name="point_fulls_low" value="${num(config.pointFulls?.low) || ''}" placeholder="Ex.: 5"></label><label><span>De 6.000 a 9.000</span><input type="number" min="1" name="point_fulls_medium" value="${num(config.pointFulls?.medium) || ''}" placeholder="Ex.: 8 a 11"></label><label><span>Acima de 9.000 pontos</span><input type="number" min="1" name="point_fulls_high" value="${num(config.pointFulls?.high) || ''}" placeholder="Ex.: 12 a 15"></label></div></div></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Filtros das aldeias de origem</strong><div class="cmo-unit-grid"><label><span>Permitir somente estes continentes</span><input name="include_continents" value="${escapeHtml(config.includeContinents || '')}" placeholder="Vazio = permitir todos"></label><label><span>Nunca utilizar estes continentes</span><input name="exclude_continents" value="${escapeHtml(config.excludeContinents || '')}" placeholder="Ex.: K55; K65"></label></div><small class="cmo-target-help">A primeira caixa limita as origens aos continentes informados. A segunda sempre remove os continentes informados.</small><label><span>Ignorar jogadores de origem — separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Jogador1; Jogador2">${escapeHtml(config.playerBlacklist || '')}</textarea></label></div>
-                    <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. O algoritmo prefere jogadores geograficamente próximos e, entre opções semelhantes, quem recebeu menos fakes.</div></div>
+                    <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. Todos os nicks participam da divisão; a prioridade é quem recebeu menos fakes e menos alvos.</div></div>
                     <div class="cmo-actions"><button type="button" class="btn" data-action="map-fulls" data-mode-only="fulls">Mapear fulls</button><button type="button" class="btn cmo-primary" data-action="plan">Distribuir fakes</button><button type="button" class="btn" data-action="export-csv" disabled>Exportar CSV</button></div>
                 </div>
                 <div class="cmo-results"></div>`;
