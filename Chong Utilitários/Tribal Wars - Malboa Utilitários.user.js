@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.8.0
+// @version      4.9.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.41.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.42.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10047,6 +10047,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             fullPlayerRules: new Map(),
             fullPlayerUsage: [],
             worldVillages: [],
+            worldPlayers: new Map(),
+            moraleMode: null,
             targetPointsWarning: '',
             runSequence: 0
         };
@@ -10250,9 +10252,42 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const x = Number(fields[2]);
                 const y = Number(fields[3]);
                 if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-                return { id: fields[0], x, y, coordinate: `${x}|${y}`, points: num(fields[5]) };
+                return { id: fields[0], x, y, coordinate: `${x}|${y}`, playerId: String(fields[4] || '0'), points: num(fields[5]) };
             }).filter(Boolean);
             return state.worldVillages;
+        }
+
+        function decodeMapValue(value) {
+            try {
+                return decodeURIComponent(String(value || '').replace(/\+/g, ' '));
+            } catch (_error) {
+                return String(value || '').replace(/\+/g, ' ');
+            }
+        }
+
+        async function loadWorldPlayers() {
+            if (state.worldPlayers.size) return state.worldPlayers;
+            const response = await fetch('/map/player.txt', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const players = new Map();
+            (await response.text()).split(/\r?\n/).forEach((line) => {
+                if (!line) return;
+                const fields = line.split(',');
+                const id = String(fields[0] || '');
+                if (!id) return;
+                players.set(id, { id, name: decodeMapValue(fields[1]), points: num(fields[4]) });
+            });
+            state.worldPlayers = players;
+            return players;
+        }
+
+        async function loadMoraleMode() {
+            if (state.moraleMode !== null) return state.moraleMode;
+            const response = await fetch('/interface.php?func=get_config', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+            state.moraleMode = num(xml.querySelector('config > moral')?.textContent);
+            return state.moraleMode;
         }
 
         async function loadTargetPointsAndCounts(targets, config) {
@@ -10265,13 +10300,19 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const wanted = new Set(targets.map((target) => target.coordinate));
             try {
                 const pointsByCoordinate = new Map();
-                (await loadWorldVillages()).forEach((village) => {
+                const worldVillages = await loadWorldVillages();
+                await Promise.allSettled([loadWorldPlayers(), loadMoraleMode()]);
+                const villagesByCoordinate = new Map(worldVillages.map((village) => [village.coordinate, village]));
+                worldVillages.forEach((village) => {
                     if (wanted.has(village.coordinate)) pointsByCoordinate.set(village.coordinate, village.points);
                 });
                 targets.forEach((target) => {
+                    const village = villagesByCoordinate.get(target.coordinate);
                     const points = pointsByCoordinate.get(target.coordinate);
                     if (points === undefined) return;
                     target.points = points;
+                    target.playerId = village?.playerId || '0';
+                    target.playerName = state.worldPlayers.get(target.playerId)?.name || (target.playerId === '0' ? 'Bárbaros' : 'Desconhecido');
                     if (!target.explicitCount && config.quantityMode === 'points') {
                         target.count = fullsForTargetPoints(points, config.pointFulls);
                     }
@@ -10420,10 +10461,24 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function chooseSource(pool, target, strategy) {
             if (!pool.length) return null;
             const sorted = [...pool].sort((a, b) => {
+                const moraleDelta = (moraleFor(b, target) ?? -1) - (moraleFor(a, target) ?? -1);
+                if (moraleDelta) return moraleDelta;
                 const delta = distance(a, target) - distance(b, target);
                 return strategy === 'farthest' ? -delta : delta;
             });
             return sorted[0];
+        }
+
+        function moraleFor(source, target) {
+            if (state.moraleMode === 0 || String(target.playerId || '0') === '0') return 100;
+            const attacker = state.worldPlayers.get(String(source.playerId || ''));
+            const defender = state.worldPlayers.get(String(target.playerId || ''));
+            if (!attacker?.points || !defender?.points) return null;
+            return Math.min(100, 30 + (defender.points / attacker.points) * 300);
+        }
+
+        function formatMorale(value) {
+            return Number.isFinite(value) ? `${Math.round(value)}%` : '—';
         }
 
         function buildPlan(candidates, targets, strategy, playerRules = new Map()) {
@@ -10433,7 +10488,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const source = chooseSource(pool, target, strategy);
                 if (!source) return false;
                 pool.splice(pool.indexOf(source), 1);
-                assignments.push({ source, target, distance: distance(source, target), sequence: assignments.length + 1 });
+                assignments.push({ source, target, distance: distance(source, target), morale: moraleFor(source, target), sequence: assignments.length + 1 });
                 assignedByTarget.set(target.coordinate, assignedByTarget.get(target.coordinate) + 1);
                 return true;
             };
@@ -10536,10 +10591,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const impact = formatOperationAt(state.operationAt);
                 return `[b]PLANEJAMENTO DA OPERAÇÃO DE FAKES[/b]\n\n[b]Horário de chegada:[/b] ${impact || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ALVO [||] FAKES [||] REFERÊNCIA DE DISTÂNCIA [/**]\n${rows}\n[/table]\n\nA aldeia usada no cálculo é apenas uma referência geográfica. Cada jogador escolhe suas próprias origens disponíveis.`;
             }
-            const rows = state.assignments.map((item) => `[**]${item.sequence} [||] [player]${item.source.playerName}[/player] [||] [coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n');
+            const rows = state.assignments.map((item) => `[**]${item.sequence} [||] [player]${item.source.playerName}[/player] [||] [coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatMorale(item.morale)} [||] ${formatDistance(item.distance)} campos[/**]`).join('\n');
             const impact = formatOperationAtPrecise(state.operationAt);
             const operationName = String(state.fullMessage.operationName || '').trim();
-            return `[b]PLANEJAMENTO DA OPERAÇÃO${operationName ? ` ${operationName}` : ''}[/b]\n\n[b]Data e hora do impacto:[/b] ${impact || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${rows}\n[/table]`;
+            return `[b]PLANEJAMENTO DA OPERAÇÃO${operationName ? ` ${operationName}` : ''}[/b]\n\n[b]Data e hora do impacto:[/b] ${impact || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ORIGEM [||] ALVO [||] MORAL [||] DISTÂNCIA [/**]\n${rows}\n[/table]`;
         }
 
         function buildMessages() {
@@ -10565,7 +10620,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const minimumText = `${formatNumber(minimums.axe)} bárbaros, ${formatNumber(minimums.light)} cavalarias leves e ${formatNumber(minimums.ram)} aríetes`;
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO${operationName ? ` ${operationName}` : ''} — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player]. Estas são as origens e os alvos reservados para você.\n\n[b]Os ataques devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n\n[b]Total solicitado:[/b] ${totalFulls} ${totalFulls === 1 ? 'full' : 'fulls'} em ${targetCounts.size} ${targetCounts.size === 1 ? 'alvo' : 'alvos'}.\n\n[b]Padrão mínimo de cada full:[/b] envie pelo menos ${minimumText}${note ? `, ${note}` : '.'}\n\n[spoiler=Coordenadas para agendar]\n[code]\n${targetCoordinates}\n[/code]\n[/spoiler]\n\nCada linha está no formato COORDENADA QUANTIDADE DE FULLS, sem repetir o mesmo alvo.\n\n[table]\n[**] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${group.orders.map((item) => `[**][coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n')}\n[/table]\n\nConfirme as origens e aguarde as demais instruções da liderança antes de enviar.`
+                    text: `[b]OPERAÇÃO${operationName ? ` ${operationName}` : ''} — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player]. Estas são as origens e os alvos reservados para você.\n\n[b]Os ataques devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n\n[b]Total solicitado:[/b] ${totalFulls} ${totalFulls === 1 ? 'full' : 'fulls'} em ${targetCounts.size} ${targetCounts.size === 1 ? 'alvo' : 'alvos'}.\n\n[b]Padrão mínimo de cada full:[/b] envie pelo menos ${minimumText}${note ? `, ${note}` : '.'}\n\n[spoiler=Coordenadas para agendar]\n[code]\n${targetCoordinates}\n[/code]\n[/spoiler]\n\nCada linha está no formato COORDENADA QUANTIDADE DE FULLS, sem repetir o mesmo alvo.\n\n[table]\n[**] ORIGEM [||] ALVO [||] MORAL [||] DISTÂNCIA [/**]\n${group.orders.map((item) => `[**][coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatMorale(item.morale)} [||] ${formatDistance(item.distance)} campos[/**]`).join('\n')}\n[/table]\n\nConfirme as origens e aguarde as demais instruções da liderança antes de enviar.`
                 };
             });
         }
@@ -10685,16 +10740,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const requested = state.targets.reduce((total, target) => total + target.count, 0);
             const totalMissing = state.missing.reduce((total, item) => total + item.missing, 0);
             const assignedPlayers = new Set(state.assignments.map((item) => item.source.playerName)).size;
+            const moraleNotice = state.moraleMode === 0
+                ? ' A moral está desativada neste mundo.'
+                : state.moraleMode === 1
+                    ? ' A moral por pontos está ativa: o planejador prioriza a maior moral contra o dono do alvo e usa a distância como desempate.'
+                    : ' A configuração de moral não pôde ser confirmada; valores disponíveis são apenas estimativas por pontos.';
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(state.candidates.length)}</strong><span>Fulls encontrados</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos</span></div><div><strong>${formatNumber(requested)}</strong><span>Fulls solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(state.assignments.length) : '—'}</strong><span>Fulls distribuídos</span></div><div class="${planned && totalMissing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(totalMissing) : '—'}</strong><span>Fulls faltantes</span></div><div><strong>${planned ? formatNumber(assignedPlayers) : '—'}</strong><span>Jogadores envolvidos</span></div></div>
-                <div class="cmo-data-info">Tropas salvas em <strong>${escapeHtml(state.payload?.savedAt ? new Date(state.payload.savedAt).toLocaleString('pt-BR') : 'data desconhecida')}</strong>. Cada aldeia ofensiva é utilizada no máximo uma vez. Jogadores com percentual configurado são atendidos primeiro; os demais dividem o restante.${offensiveNotice}${planned ? '' : '<br><strong>Mapeamento concluído. Para reservar os fulls nos alvos, clique em “Montar operação”.</strong>'}${state.targetPointsWarning ? `<br><strong class="cmo-warning">${escapeHtml(state.targetPointsWarning)}</strong>` : ''}</div>
+                <div class="cmo-data-info">Tropas salvas em <strong>${escapeHtml(state.payload?.savedAt ? new Date(state.payload.savedAt).toLocaleString('pt-BR') : 'data desconhecida')}</strong>. Cada aldeia ofensiva é utilizada no máximo uma vez. Jogadores com percentual configurado são atendidos primeiro; entre os demais, a melhor moral é escolhida antes da distância.${moraleNotice}${offensiveNotice}${planned ? '' : '<br><strong>Mapeamento concluído. Para reservar os fulls nos alvos, clique em “Montar operação”.</strong>'}${state.targetPointsWarning ? `<br><strong class="cmo-warning">${escapeHtml(state.targetPointsWarning)}</strong>` : ''}</div>
                 ${renderPlayerFullSummary()}
                 ${renderMap()}
                 ${renderCandidates()}
                 ${planned ? `<section><div class="cmo-section-head"><div><h3>Distribuição por alvo</h3><small>A quantidade individual informada ao lado da coordenada sempre substitui a regra automática ou a quantidade padrão.</small></div></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Alvo</th><th>Pontos</th><th>Regra</th><th>Solicitados</th><th>Designados</th><th>Faltam</th><th>Origens reservadas</th></tr></thead><tbody>${state.missing.map((item) => {
                     const assigned = state.assignments.filter((assignment) => assignment.target.coordinate === item.target.coordinate);
                     const rule = item.target.explicitCount ? 'Quantidade individual' : config.quantityMode === 'points' && item.target.points !== null ? 'Automático por pontos' : 'Quantidade padrão';
-                    return `<tr class="${item.missing ? 'cmo-row-missing' : ''}"><td><a href="${escapeHtml(mapUrl(item.target))}" target="_blank">${escapeHtml(item.target.coordinate)}</a></td><td>${item.target.points === null ? '—' : formatNumber(item.target.points)}</td><td>${escapeHtml(rule)}</td><td>${item.target.count}</td><td>${item.assigned}</td><td><strong>${item.missing}</strong></td><td>${assigned.map((assignment) => `${escapeHtml(assignment.source.playerName)}: <b>${escapeHtml(assignment.source.coordinate)}</b> (${formatDistance(assignment.distance)})`).join('<br>') || '—'}</td></tr>`;
+                    return `<tr class="${item.missing ? 'cmo-row-missing' : ''}"><td><a href="${escapeHtml(mapUrl(item.target))}" target="_blank">${escapeHtml(item.target.coordinate)}</a><small>${escapeHtml(item.target.playerName || '')}</small></td><td>${item.target.points === null ? '—' : formatNumber(item.target.points)}</td><td>${escapeHtml(rule)}</td><td>${item.target.count}</td><td>${item.assigned}</td><td><strong>${item.missing}</strong></td><td>${assigned.map((assignment) => `${escapeHtml(assignment.source.playerName)}: <b>${escapeHtml(assignment.source.coordinate)}</b> — moral ${formatMorale(assignment.morale)} (${formatDistance(assignment.distance)})`).join('<br>') || '—'}</td></tr>`;
                 }).join('')}</tbody></table></div></section>
                 <section><div class="cmo-section-head"><div><h3>Mensagens por jogador</h3><small>O TXT pode ser importado diretamente na fila da aba de Mensagens.</small></div><div class="cmo-head-actions"><button type="button" class="btn" data-action="copy-operation">Copiar operação completa</button><button type="button" class="btn cmo-primary" data-action="export-messages">Baixar MPs em TXT</button></div></div><div class="cmo-messages">${state.messages.map((message, index) => `<article><header><strong>${escapeHtml(message.playerName)}</strong><button type="button" class="btn" data-copy-message="${index}">Copiar mensagem</button></header><textarea readonly>${escapeHtml(message.text)}</textarea></article>`).join('') || '<div class="cmo-empty">Nenhuma mensagem gerada.</div>'}</div></section>` : '<div class="cmo-empty">Informe os alvos para montar a distribuição. O mapeamento de fulls acima já pode ser utilizado.</div>'}`;
             panel.querySelector('[data-action="export-csv"]').disabled = !state.assignments.length;
@@ -10735,7 +10795,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
             const rows = state.operationMode === 'fakes'
                 ? [['Sequência', 'Jogador', 'Alvo', 'Quantidade de fakes', 'Aldeia próxima (referência)', 'Distância', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.target.coordinate, item.fakeCount, item.source.coordinate, item.distance.toFixed(2), formatOperationAt(state.operationAt)])]
-                : [['Sequência', 'Jogador', 'Origem', 'Alvo', 'Pontos do alvo', 'Distância', 'Impacto'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.source.coordinate, item.target.coordinate, item.target.points ?? '', item.distance.toFixed(2), formatOperationAt(state.operationAt)])];
+                : [['Sequência', 'Jogador', 'Origem', 'Alvo', 'Defensor', 'Pontos do alvo', 'Moral', 'Distância', 'Impacto'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.source.coordinate, item.target.coordinate, item.target.playerName || '', item.target.points ?? '', formatMorale(item.morale), item.distance.toFixed(2), formatOperationAt(state.operationAt)])];
             const blob = new Blob(['\ufeff' + rows.map((row) => row.map(quote).join(';')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
