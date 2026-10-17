@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.4.0
+// @version      4.5.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.37.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.38.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10036,6 +10036,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             missing: [],
             messages: [],
             operationAt: '',
+            fullMessage: { operationName: 'MATA *TEM*', minimums: { axe: 4000, light: 2000, ram: 200 }, note: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' },
             missingPlayers: [],
             fakePlayerRules: new Map(),
             targetPointsWarning: '',
@@ -10176,13 +10177,16 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     playerBlacklist: '',
                     strategy: 'balanced-nearest',
                     operationAt: '',
+                    operationName: 'MATA *TEM*',
+                    messageMinimums: { axe: 4000, light: 2000, ram: 200 },
+                    fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....',
                     fakePlayers: '',
                     defaultFakes: 1,
                     targets: '',
                     ...JSON.parse(localStorage.getItem(configKey()) || '{}')
                 };
             } catch (_error) {
-                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, fakePlayers: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '' };
+                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, fakePlayers: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
             }
         }
 
@@ -10253,6 +10257,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return match ? `${match[3]}/${match[2]}/${match[1]} às ${match[4]}:${match[5]}` : '';
         }
 
+        function formatOperationAtPrecise(value) {
+            const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?/);
+            if (!match) return '';
+            const milliseconds = String(match[7] || '000').padEnd(3, '0');
+            return `${match[3]}/${match[2]}/${match[1]} às ${match[4]}:${match[5]}:${match[6] || '00'}:${milliseconds}`;
+        }
+
         function readForm() {
             const panel = document.getElementById(SCRIPT_ID);
             return {
@@ -10270,6 +10281,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 playerBlacklist: panel.querySelector('[name="player_blacklist"]').value,
                 strategy: panel.querySelector('[name="strategy"]').value,
                 operationAt: panel.querySelector('[name="operation_at"]').value,
+                operationName: panel.querySelector('[name="operation_name"]').value,
+                messageMinimums: {
+                    axe: num(panel.querySelector('[name="message_min_axe"]').value),
+                    light: num(panel.querySelector('[name="message_min_light"]').value),
+                    ram: num(panel.querySelector('[name="message_min_ram"]').value)
+                },
+                fullMessageNote: panel.querySelector('[name="full_message_note"]').value,
                 fakePlayers: panel.querySelector('[name="fake_players"]').value,
                 defaultFakes: Math.max(1, num(panel.querySelector('[name="default_fakes"]').value)),
                 targets: panel.querySelector('[name="targets"]').value
@@ -10453,8 +10471,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 return `[b]PLANEJAMENTO DA OPERAÇÃO DE FAKES[/b]\n\n[b]Horário de chegada:[/b] ${impact || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ALVO [||] FAKES [||] REFERÊNCIA DE DISTÂNCIA [/**]\n${rows}\n[/table]\n\nA aldeia usada no cálculo é apenas uma referência geográfica. Cada jogador escolhe suas próprias origens disponíveis.`;
             }
             const rows = state.assignments.map((item) => `[**]${item.sequence} [||] [player]${item.source.playerName}[/player] [||] [coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n');
-            const impact = formatOperationAt(state.operationAt);
-            return `[b]PLANEJAMENTO DA OPERAÇÃO[/b]\n\n[b]Data e hora do impacto:[/b] ${impact || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${rows}\n[/table]`;
+            const impact = formatOperationAtPrecise(state.operationAt);
+            const operationName = String(state.fullMessage.operationName || '').trim();
+            return `[b]PLANEJAMENTO DA OPERAÇÃO${operationName ? ` ${operationName}` : ''}[/b]\n\n[b]Data e hora do impacto:[/b] ${impact || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${rows}\n[/table]`;
         }
 
         function buildMessages() {
@@ -10466,9 +10485,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             });
             return [...grouped.values()].sort((a, b) => a.playerName.localeCompare(b.playerName)).map((group) => {
                 const targetCoordinates = group.orders.map((item) => item.target.coordinate).join('\n');
+                const operationName = String(state.fullMessage.operationName || '').trim();
+                const minimums = state.fullMessage.minimums || {};
+                const note = String(state.fullMessage.note || '').trim();
+                const minimumText = `${formatNumber(minimums.axe)} bárbaros, ${formatNumber(minimums.light)} cavalarias leves e ${formatNumber(minimums.ram)} aríetes`;
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player]. Estas são as origens e os alvos reservados para você.\n\n[b]Os ataques devem chegar em:[/b] ${formatOperationAt(state.operationAt) || 'horário a definir pela liderança'}\n\n[b]Padrão mínimo de cada full:[/b] envie pelo menos 5.000 bárbaros, 2.000 cavalarias leves e 300 aríetes.\n\n[spoiler=Coordenadas para agendar]\n[code]\n${targetCoordinates}\n[/code]\n[/spoiler]\n\nO bloco acima contém somente os alvos, um por ataque, pronto para copiar e colar as coordenadas.\n\n[table]\n[**] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${group.orders.map((item) => `[**][coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n')}\n[/table]\n\nConfirme as origens e aguarde as demais instruções da liderança antes de enviar.`
+                    text: `[b]OPERAÇÃO${operationName ? ` ${operationName}` : ''} — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player]. Estas são as origens e os alvos reservados para você.\n\n[b]Os ataques devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n\n[b]Padrão mínimo de cada full:[/b] envie pelo menos ${minimumText}${note ? `, ${note}` : '.'}\n\n[spoiler=Coordenadas para agendar]\n[code]\n${targetCoordinates}\n[/code]\n[/spoiler]\n\nO bloco acima contém somente os alvos, um por ataque, pronto para copiar e colar as coordenadas.\n\n[table]\n[**] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${group.orders.map((item) => `[**][coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n')}\n[/table]\n\nConfirme as origens e aguarde as demais instruções da liderança antes de enviar.`
                 };
             });
         }
@@ -10589,7 +10612,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function operationMessagesText() {
             const impact = formatOperationAt(state.operationAt);
-            const subject = `${state.operationMode === 'fakes' ? 'Operação de Fakes' : 'Operação — Alvos Designados'}${impact ? ` — ${impact}` : ''}`;
+            const fullName = String(state.fullMessage.operationName || '').trim();
+            const subject = `${state.operationMode === 'fakes' ? 'Operação de Fakes' : `Operação${fullName ? ` ${fullName}` : ''} — Alvos Designados`}${impact ? ` — ${impact}` : ''}`;
             const blocks = state.messages.map((message) => `================ MP PARA: ${message.playerName} ================\n${message.text}`);
             return `ASSUNTO DAS MPS: ${subject}\n\n${blocks.join('\n\n')}`;
         }
@@ -10633,6 +10657,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 saveConfig(config);
                 state.operationMode = config.operationMode;
                 state.operationAt = config.operationAt;
+                state.fullMessage = {
+                    operationName: config.operationName,
+                    minimums: config.messageMinimums,
+                    note: config.fullMessageNote
+                };
                 state.assignments = [];
                 state.messages = [];
                 state.targetPointsWarning = '';
@@ -10728,7 +10757,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     <div class="cmo-card" data-mode-only="fulls"><strong>Definição dinâmica de full — mínimos totais (aldeia + fora)</strong><div class="cmo-unit-grid">${state.units.length ? state.units.map((unit) => `<label><span>${escapeHtml(unit.label)}</span><input type="number" min="0" step="1" data-unit="${unit.id}" value="${num(config.thresholds?.[unit.id] ?? unit.default)}" placeholder="0 = ignorar"></label>`).join('') : '<span>Carregue as tropas para detectar as unidades deste mundo.</span>'}</div></div>
                     <div class="cmo-card"><strong>Alvos da operação</strong><label><span>Coordenadas — uma por linha; quantidade individual opcional</span><textarea name="targets" placeholder="500|500\n501|501; 8">${escapeHtml(config.targets || '')}</textarea></label><small class="cmo-target-help" data-mode-only="fakes">Ex.: 501|501; 8 solicita 8 fakes para esse alvo. Sem número, usa a quantidade padrão abaixo.</small><small class="cmo-target-help" data-mode-only="fulls">Ex.: 501|501; 8 solicita 8 fulls somente para esse alvo.</small><div data-mode-only="fakes"><label><span>Quantidade padrão de fakes por aldeia-alvo</span><input type="number" min="1" name="default_fakes" value="${Math.max(1, num(config.defaultFakes || 1))}"></label></div><div data-mode-only="fulls"><label><span>Como definir a quantidade</span><select name="quantity_mode"><option value="fixed" ${config.quantityMode !== 'points' ? 'selected' : ''}>Quantidade padrão para todos</option><option value="points" ${config.quantityMode === 'points' ? 'selected' : ''}>Usar quantidades definidas por faixa de pontos</option></select></label><label><span>Quantidade padrão de fulls por alvo (também usada como fallback)</span><input type="number" min="1" name="default_fulls" value="${Math.max(1, num(config.defaultFulls || 5))}"></label><div class="cmo-point-rules"><strong>Quantidades desta operação — preencha os três campos</strong><label><span>Abaixo de 6.000 pontos</span><input type="number" min="1" name="point_fulls_low" value="${num(config.pointFulls?.low) || ''}" placeholder="Ex.: 5"></label><label><span>De 6.000 a 9.000</span><input type="number" min="1" name="point_fulls_medium" value="${num(config.pointFulls?.medium) || ''}" placeholder="Ex.: 8 a 11"></label><label><span>Acima de 9.000 pontos</span><input type="number" min="1" name="point_fulls_high" value="${num(config.pointFulls?.high) || ''}" placeholder="Ex.: 12 a 15"></label></div></div></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Filtros das aldeias de origem</strong><div class="cmo-unit-grid"><label><span>Permitir somente estes continentes</span><input name="include_continents" value="${escapeHtml(config.includeContinents || '')}" placeholder="Vazio = permitir todos"></label><label><span>Nunca utilizar estes continentes</span><input name="exclude_continents" value="${escapeHtml(config.excludeContinents || '')}" placeholder="Ex.: K55; K65"></label></div><small class="cmo-target-help">A primeira caixa limita as origens aos continentes informados. A segunda sempre remove os continentes informados.</small><label><span>Ignorar jogadores de origem — separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Jogador1; Jogador2">${escapeHtml(config.playerBlacklist || '')}</textarea></label></div>
-                    <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. As metas individuais são preenchidas primeiro; depois, jogadores sem meta dividem o restante.</div></div>
+                    <div class="cmo-card" data-mode-only="fulls"><strong>Texto enviado nas MPs de full</strong><label><span>Nome da operação</span><input name="operation_name" value="${escapeHtml(config.operationName || 'MATA *TEM*')}" placeholder="Ex.: MATA *TEM*"></label><div class="cmo-unit-grid"><label><span>Bárbaros solicitados na MP</span><input type="number" min="0" name="message_min_axe" value="${num(config.messageMinimums?.axe ?? 4000)}"></label><label><span>Cavalarias leves solicitadas</span><input type="number" min="0" name="message_min_light" value="${num(config.messageMinimums?.light ?? 2000)}"></label><label><span>Aríetes solicitados</span><input type="number" min="0" name="message_min_ram" value="${num(config.messageMinimums?.ram ?? 200)}"></label></div><label><span>Observação após o padrão mínimo</span><textarea name="full_message_note">${escapeHtml(config.fullMessageNote || 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....')}</textarea></label><small class="cmo-target-help">Esses valores alteram somente o texto da MP. Os mínimos usados para localizar fulls continuam sendo os campos do primeiro quadro.</small></div>
+                    <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" step="1" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa no formato HH:mm:ss:milissegundos.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. As metas individuais são preenchidas primeiro; depois, jogadores sem meta dividem o restante.</div></div>
                     <div class="cmo-actions"><button type="button" class="btn" data-action="map-fulls" data-mode-only="fulls">Mapear fulls</button><button type="button" class="btn cmo-primary" data-action="plan">Distribuir fakes</button><button type="button" class="btn" data-action="export-csv" disabled>Exportar CSV</button></div>
                 </div>
                 <div class="cmo-results"></div>`;
