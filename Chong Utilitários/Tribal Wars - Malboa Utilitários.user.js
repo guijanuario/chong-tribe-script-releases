@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.7.0
+// @version      4.7.1
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.40.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.40.1', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10519,14 +10519,22 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 grouped.get(key).orders.push(assignment);
             });
             return [...grouped.values()].sort((a, b) => a.playerName.localeCompare(b.playerName)).map((group) => {
-                const targetCoordinates = group.orders.map((item) => item.target.coordinate).join('\n');
+                const targetCounts = new Map();
+                group.orders.forEach((item) => {
+                    const coordinate = item.target.coordinate;
+                    targetCounts.set(coordinate, (targetCounts.get(coordinate) || 0) + 1);
+                });
+                const targetCoordinates = [...targetCounts.entries()]
+                    .map(([coordinate, count]) => `${coordinate} ${count} ${count === 1 ? 'FULL' : 'FULLS'}`)
+                    .join('\n');
+                const totalFulls = group.orders.length;
                 const operationName = String(state.fullMessage.operationName || '').trim();
                 const minimums = state.fullMessage.minimums || {};
                 const note = String(state.fullMessage.note || '').trim();
                 const minimumText = `${formatNumber(minimums.axe)} bárbaros, ${formatNumber(minimums.light)} cavalarias leves e ${formatNumber(minimums.ram)} aríetes`;
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO${operationName ? ` ${operationName}` : ''} — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player]. Estas são as origens e os alvos reservados para você.\n\n[b]Os ataques devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n\n[b]Padrão mínimo de cada full:[/b] envie pelo menos ${minimumText}${note ? `, ${note}` : '.'}\n\n[spoiler=Coordenadas para agendar]\n[code]\n${targetCoordinates}\n[/code]\n[/spoiler]\n\nO bloco acima contém somente os alvos, um por ataque, pronto para copiar e colar as coordenadas.\n\n[table]\n[**] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${group.orders.map((item) => `[**][coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n')}\n[/table]\n\nConfirme as origens e aguarde as demais instruções da liderança antes de enviar.`
+                    text: `[b]OPERAÇÃO${operationName ? ` ${operationName}` : ''} — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player]. Estas são as origens e os alvos reservados para você.\n\n[b]Os ataques devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n\n[b]Total solicitado:[/b] ${totalFulls} ${totalFulls === 1 ? 'full' : 'fulls'} em ${targetCounts.size} ${targetCounts.size === 1 ? 'alvo' : 'alvos'}.\n\n[b]Padrão mínimo de cada full:[/b] envie pelo menos ${minimumText}${note ? `, ${note}` : '.'}\n\n[spoiler=Coordenadas para agendar]\n[code]\n${targetCoordinates}\n[/code]\n[/spoiler]\n\nCada linha está no formato COORDENADA QUANTIDADE DE FULLS, sem repetir o mesmo alvo.\n\n[table]\n[**] ORIGEM [||] ALVO [||] DISTÂNCIA [/**]\n${group.orders.map((item) => `[**][coord]${item.source.coordinate}[/coord] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatDistance(item.distance)} campos[/**]`).join('\n')}\n[/table]\n\nConfirme as origens e aguarde as demais instruções da liderança antes de enviar.`
                 };
             });
         }
