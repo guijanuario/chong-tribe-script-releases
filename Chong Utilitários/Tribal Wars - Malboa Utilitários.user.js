@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.6.0
+// @version      4.7.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.39.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.40.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3617,6 +3617,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         };
         const BASE_DEFENSE_UNITS = ['spear', 'sword', 'archer', 'heavy'];
         const DISTRIBUTION_OWNERSHIP_UNITS = ['spear', 'sword', 'spy', 'heavy'];
+        const OFFENSIVE_OPERATION_UNITS = ['axe', 'spy', 'light', 'marcher', 'ram', 'catapult', 'snob'];
         const DEFAULT_STRATEGIC_SETTINGS = Object.freeze({
             full: { axe: 5000, light: 2000, ram: 200 },
             blind: { spear: 30000, sword: 30000, spy: 2000, heavy: 6000 }
@@ -3895,6 +3896,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         points: village.points,
                         home: village.home,
                         transit: village.transit,
+                        // Resumo compacto do total próprio ofensivo vindo da aba Tropas.
+                        // Inclui unidades em coleta, farm, comandos e demais deslocamentos.
+                        offense: village.ownedTotal ? OFFENSIVE_OPERATION_UNITS.map((unit) => parseGameNumber(village.ownedTotal?.[unit])) : null,
                         ownershipStatus: village.ownershipStatus || 'unknown'
                     })),
                     ownershipSummary: result.ownershipSummary,
@@ -10014,6 +10018,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         const SCRIPT_ID = 'chonguera-montador-operacoes';
         const TROOP_STORAGE_PREFIX = 'chonguera_tropas_tribo_v2';
         const CONFIG_PREFIX = 'chonguera_montador_operacoes_config';
+        const OFFENSIVE_OPERATION_UNITS = ['axe', 'spy', 'light', 'marcher', 'ram', 'catapult', 'snob'];
         const UNIT_META = [
             { id: 'axe', label: 'Machados', default: 6000 },
             { id: 'light', label: 'Cavalaria leve', default: 2500 },
@@ -10350,13 +10355,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     const continent = continentOf(coord);
                     if ((included.size && !included.has(continent)) || excluded.has(continent)) return;
                     const home = Object.fromEntries(state.units.map((unit) => [unit.id, num(village.home?.[unit.id])]));
-                    const transit = Object.fromEntries(state.units.map((unit) => [unit.id, Math.max(
-                        num(village.transit?.[unit.id]),
-                        num(village.away?.[unit.id]),
-                        num(village.outside?.[unit.id]),
-                        num(village.support?.[unit.id])
-                    )]));
-                    const total = Object.fromEntries(state.units.map((unit) => [unit.id, home[unit.id] + transit[unit.id]]));
+                    const hasOwnedOffense = Array.isArray(village.offense);
+                    const transit = {};
+                    const total = {};
+                    state.units.forEach((unit) => {
+                        const reportedOutside = Math.max(
+                            num(village.transit?.[unit.id]),
+                            num(village.away?.[unit.id]),
+                            num(village.outside?.[unit.id]),
+                            num(village.support?.[unit.id])
+                        );
+                        const offenseIndex = OFFENSIVE_OPERATION_UNITS.indexOf(unit.id);
+                        const ownedTotal = hasOwnedOffense && offenseIndex >= 0 ? num(village.offense[offenseIndex]) : null;
+                        total[unit.id] = ownedTotal === null ? home[unit.id] + reportedOutside : Math.max(home[unit.id] + reportedOutside, ownedTotal);
+                        transit[unit.id] = Math.max(reportedOutside, total[unit.id] - home[unit.id]);
+                    });
                     if (!activeThresholds.every((unit) => total[unit.id] >= num(config.thresholds[unit.id]))) return;
                     candidates.push({
                         id: String(village.id || ''),
@@ -10367,11 +10380,22 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         playerName: player.name || 'Jogador',
                         home,
                         transit,
-                        total
+                        total,
+                        hasOwnedOffense
                     });
                 });
             });
             return candidates.sort((a, b) => a.playerName.localeCompare(b.playerName) || a.coordinate.localeCompare(b.coordinate));
+        }
+
+        function offensiveSnapshotCoverage() {
+            let total = 0;
+            let complete = 0;
+            (state.payload?.results || []).forEach((player) => (player.villageDetails || []).forEach((village) => {
+                total += 1;
+                if (Array.isArray(village.offense)) complete += 1;
+            }));
+            return { total, complete };
         }
 
         function chooseSource(pool, target, strategy) {
@@ -10567,7 +10591,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function renderCandidates() {
-            return `<section><div class="cmo-section-head"><div><h3>Aldeias identificadas como full</h3><small>O filtro soma todas as tropas da origem: na aldeia + em trânsito + apoiando fora. Nas células: total e, abaixo, na aldeia / fora.</small></div><strong>${formatNumber(state.candidates.length)} aldeia(s)</strong></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Jogador</th><th>Aldeia</th><th>Coordenada</th><th>Continente</th>${state.units.map((unit) => `<th>${escapeHtml(unit.label)}<small>total · aldeia / fora</small></th>`).join('')}</tr></thead><tbody>${state.candidates.map((source) => `<tr><td>${escapeHtml(source.playerName)}</td><td>${escapeHtml(source.name)}</td><td><a href="${escapeHtml(villageUrl(source))}" target="_blank">${escapeHtml(source.coordinate)}</a></td><td>${escapeHtml(source.continent)}</td>${state.units.map((unit) => `<td><strong>${formatNumber(source.total[unit.id])}</strong><small>${formatNumber(source.home[unit.id])} / ${formatNumber(source.transit[unit.id])}</small></td>`).join('')}</tr>`).join('') || `<tr><td colspan="${4 + state.units.length}">Nenhuma aldeia atingiu os mínimos configurados.</td></tr>`}</tbody></table></div></section>`;
+            return `<section><div class="cmo-section-head"><div><h3>Aldeias identificadas como full</h3><small>O filtro usa todas as tropas próprias ofensivas: na aldeia + coleta + farm + comandos a caminho + demais tropas fora. Nas células: total e, abaixo, na aldeia / fora.</small></div><strong>${formatNumber(state.candidates.length)} aldeia(s)</strong></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Jogador</th><th>Aldeia</th><th>Coordenada</th><th>Continente</th>${state.units.map((unit) => `<th>${escapeHtml(unit.label)}<small>total · aldeia / fora</small></th>`).join('')}</tr></thead><tbody>${state.candidates.map((source) => `<tr><td>${escapeHtml(source.playerName)}</td><td>${escapeHtml(source.name)}</td><td><a href="${escapeHtml(villageUrl(source))}" target="_blank">${escapeHtml(source.coordinate)}</a></td><td>${escapeHtml(source.continent)}</td>${state.units.map((unit) => `<td><strong>${formatNumber(source.total[unit.id])}</strong><small>${formatNumber(source.home[unit.id])} / ${formatNumber(source.transit[unit.id])}</small></td>`).join('')}</tr>`).join('') || `<tr><td colspan="${4 + state.units.length}">Nenhuma aldeia atingiu os mínimos configurados.</td></tr>`}</tbody></table></div></section>`;
         }
 
         function renderPlayerFullSummary() {
@@ -10613,12 +10637,16 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function renderResults(config, planned) {
             const panel = document.getElementById(SCRIPT_ID);
+            const offensiveCoverage = offensiveSnapshotCoverage();
+            const offensiveNotice = offensiveCoverage.complete
+                ? ` Totais ofensivos completos em <strong>${formatNumber(offensiveCoverage.complete)} de ${formatNumber(offensiveCoverage.total)}</strong> aldeias; coleta, farm e tropas a caminho entram no cálculo.`
+                : ' <strong class="cmo-warning">O cache ainda não possui o total ofensivo completo. Execute “Carregar e validar origens” em Tropas da Tribo e volte ao Montador.</strong>';
             const requested = state.targets.reduce((total, target) => total + target.count, 0);
             const totalMissing = state.missing.reduce((total, item) => total + item.missing, 0);
             const assignedPlayers = new Set(state.assignments.map((item) => item.source.playerName)).size;
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(state.candidates.length)}</strong><span>Fulls encontrados</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos</span></div><div><strong>${formatNumber(requested)}</strong><span>Fulls solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(state.assignments.length) : '—'}</strong><span>Fulls distribuídos</span></div><div class="${planned && totalMissing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(totalMissing) : '—'}</strong><span>Fulls faltantes</span></div><div><strong>${planned ? formatNumber(assignedPlayers) : '—'}</strong><span>Jogadores envolvidos</span></div></div>
-                <div class="cmo-data-info">Tropas salvas em <strong>${escapeHtml(state.payload?.savedAt ? new Date(state.payload.savedAt).toLocaleString('pt-BR') : 'data desconhecida')}</strong>. Cada aldeia ofensiva é utilizada no máximo uma vez.${planned ? '' : '<br><strong>Mapeamento concluído. Para reservar os fulls nos alvos, clique em “Montar operação”.</strong>'}${state.targetPointsWarning ? `<br><strong class="cmo-warning">${escapeHtml(state.targetPointsWarning)}</strong>` : ''}</div>
+                <div class="cmo-data-info">Tropas salvas em <strong>${escapeHtml(state.payload?.savedAt ? new Date(state.payload.savedAt).toLocaleString('pt-BR') : 'data desconhecida')}</strong>. Cada aldeia ofensiva é utilizada no máximo uma vez.${offensiveNotice}${planned ? '' : '<br><strong>Mapeamento concluído. Para reservar os fulls nos alvos, clique em “Montar operação”.</strong>'}${state.targetPointsWarning ? `<br><strong class="cmo-warning">${escapeHtml(state.targetPointsWarning)}</strong>` : ''}</div>
                 ${renderPlayerFullSummary()}
                 ${renderMap()}
                 ${renderCandidates()}
@@ -10771,7 +10799,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 planButton.textContent = 'Distribuir fakes';
                 if (!state.assignments.length) empty.innerHTML = '<div class="cmo-empty">Informe os jogadores, os alvos, a quantidade de fakes e o horário. Depois clique em “Distribuir fakes”.</div>';
             } else {
-                intro.innerHTML = 'Mapeia aldeias ofensivas somando <strong>todas as tropas pertencentes à origem</strong>: na aldeia, em trânsito ou apoiando fora. Reserva cada full para um único alvo e monta a distribuição da operação. Nenhum ataque é enviado automaticamente.';
+                intro.innerHTML = 'Mapeia aldeias ofensivas somando <strong>todas as tropas próprias da origem</strong>: na aldeia, em coleta, farmando, em comandos a caminho ou fora. Reserva cada full para um único alvo e monta a distribuição da operação. Nenhum ataque é enviado automaticamente.';
                 planButton.textContent = 'Montar operação de fulls';
                 if (!state.assignments.length) empty.innerHTML = '<div class="cmo-empty">Atualize as tropas da tribo, configure o padrão de full e clique em “Mapear fulls” ou “Montar operação de fulls”.</div>';
             }
