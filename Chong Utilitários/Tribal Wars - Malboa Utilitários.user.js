@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.10.1
+// @version      4.10.2
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.43.1', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.43.2', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10813,10 +10813,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return [...players.values()].sort((a, b) => a.playerName.localeCompare(b.playerName)).map((group) => {
                 const rows = groupFakeCatapultOrders(group.orders);
                 const building = rows[0]?.building;
-                const copyBlock = rows.map((item) => `${item.targetCoordinate} - ${item.count} fake(s) - ${item.building.label} - origens: ${item.origins.map((origin) => `${origin.coordinate} (${origin.count})`).join(', ')}`).join('\n');
+                const copyBlock = rows.map((item) => `${item.targetCoordinate} - ${item.count} fake(s) - ${item.building.label}`).join('\n');
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO DE FAKE CATAPULTA — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Todos os comandos devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} fake(s) de catapulta.\n[b]Seu foco de edifício:[/b] ${building?.label || 'A definir'}\n[b]Tropas por comando:[/b] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores.\n\n[spoiler=Coordenadas, quantidades e edifício]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nCada alvo aparece uma única vez. O número entre parênteses após cada origem informa quantos comandos devem sair daquela aldeia. Cada comando deve conter exatamente ${FAKE_CATAPULT_COST.catapult} catapultas e ${FAKE_CATAPULT_COST.spy} exploradores, mirando sempre ${building?.label || 'o edifício indicado'}. Nenhum ataque é enviado automaticamente pelo script.`
+                    text: `[b]OPERAÇÃO DE FAKE CATAPULTA — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Todos os comandos devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} fake(s) de catapulta.\n[b]Seu foco de edifício:[/b] ${building?.label || 'A definir'}\n[b]Tropas por comando:[/b] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores.\n\n[table]\n[**] ORIGENS [||] ALVO [||] EDIFÍCIO A MIRAR [||] QUANTIDADE DE COMANDOS [/**]\n${rows.map((item) => `[*] ${item.origins.map((origin) => `[coord]${origin.coordinate}[/coord] (${origin.count})`).join(', ')} [|] [coord]${item.targetCoordinate}[/coord] [|] ${item.building.label} [|] ${item.count}`).join('\n')}\n[/table]\n\n[spoiler=Coordenadas de destino para copiar]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nNa tabela, o número entre parênteses após cada origem informa quantos comandos devem sair daquela aldeia. No spoiler aparecem somente as coordenadas de destino, uma vez por alvo. Cada comando deve conter exatamente ${FAKE_CATAPULT_COST.catapult} catapultas e ${FAKE_CATAPULT_COST.spy} exploradores, mirando sempre ${building?.label || 'o edifício indicado'}. Nenhum ataque é enviado automaticamente pelo script.`
                 };
             });
         }
