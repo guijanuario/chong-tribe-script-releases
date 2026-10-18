@@ -4,9 +4,18 @@
     const ORIGINAL_SCRIPT = 'https://shinko-to-kuma.com/scripts/res-senderV2.js';
     const INSTANCE_KEY = '__chongResourceSenderAuto';
     const TOOLBAR_ID = 'chong-resource-auto-toolbar';
+    const DEFAULT_MIN_DELAY = 250;
+    const DEFAULT_MAX_DELAY = 350;
 
     if (window[INSTANCE_KEY]?.installed) {
-        window[INSTANCE_KEY].resume?.();
+        const current = window[INSTANCE_KEY];
+        current.minDelay = DEFAULT_MIN_DELAY;
+        current.maxDelay = DEFAULT_MAX_DELAY;
+        const minInput = document.querySelector(`#${TOOLBAR_ID} [data-auto-min]`);
+        const maxInput = document.querySelector(`#${TOOLBAR_ID} [data-auto-max]`);
+        if (minInput) minInput.value = String(DEFAULT_MIN_DELAY / 1000);
+        if (maxInput) maxInput.value = String(DEFAULT_MAX_DELAY / 1000);
+        current.resume?.();
         return;
     }
 
@@ -16,8 +25,8 @@
         timer: null,
         sent: 0,
         observer: null,
-        minDelay: 250,
-        maxDelay: 350
+        minDelay: DEFAULT_MIN_DELAY,
+        maxDelay: DEFAULT_MAX_DELAY
     };
     window[INSTANCE_KEY] = state;
 
@@ -43,8 +52,8 @@
     }
 
     function randomDelay() {
-        const low = Math.max(250, Number(state.minDelay) || 250);
-        const high = Math.max(low, Number(state.maxDelay) || 350);
+        const low = Math.max(DEFAULT_MIN_DELAY, Number(state.minDelay) || DEFAULT_MIN_DELAY);
+        const high = Math.max(low, Number(state.maxDelay) || DEFAULT_MAX_DELAY);
         return Math.round(low + Math.random() * (high - low));
     }
 
@@ -146,10 +155,10 @@
             else resume();
         });
         toolbar.querySelector('[data-auto-min]').addEventListener('change', (event) => {
-            state.minDelay = Math.max(250, Number(event.target.value) * 1000 || 250);
+            state.minDelay = Math.max(DEFAULT_MIN_DELAY, Number(event.target.value) * 1000 || DEFAULT_MIN_DELAY);
         });
         toolbar.querySelector('[data-auto-max]').addEventListener('change', (event) => {
-            state.maxDelay = Math.max(state.minDelay, Number(event.target.value) * 1000 || 350);
+            state.maxDelay = Math.max(state.minDelay, Number(event.target.value) * 1000 || DEFAULT_MAX_DELAY);
         });
         updateToggle();
     }
