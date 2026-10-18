@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.11.2
+// @version      4.12.0
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.44.2', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.0', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10053,6 +10053,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             ntPlayerRules: new Map(),
             ntPlayerUsage: [],
             ntUnassignedTargets: [],
+            ntFullPlanByTarget: new Map(),
             fullPlayerRules: new Map(),
             fullPlayerUsage: [],
             fakeCatapultPlayerBuildings: new Map(),
@@ -10174,6 +10175,41 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return rules;
         }
 
+        function parseNtFullPlan(value) {
+            const targets = new Map();
+            let commands = 0;
+            String(value || '').split(/\r?\n/).forEach((line) => {
+                const playerName = line.match(/\[player\]([^\]]+)\[\/player\]/i)?.[1]?.trim();
+                const coordinates = [...line.matchAll(/\[coord\](\d{3}\|\d{3})\[\/coord\]/gi)].map((match) => match[1]);
+                if (!playerName || coordinates.length < 2) return;
+                const origin = coordinates[0];
+                const target = coordinates[1];
+                if (!targets.has(target)) targets.set(target, { coordinate: target, total: 0, players: new Map() });
+                const targetRow = targets.get(target);
+                const playerKey = normalizeName(playerName);
+                if (!targetRow.players.has(playerKey)) targetRow.players.set(playerKey, { name: playerName, count: 0, origins: new Set() });
+                const playerRow = targetRow.players.get(playerKey);
+                playerRow.count += 1;
+                playerRow.origins.add(origin);
+                targetRow.total += 1;
+                commands += 1;
+            });
+            return { targets, commands };
+        }
+
+        function ntFullSupport(targetCoordinate) {
+            return state.ntFullPlanByTarget.get(targetCoordinate) || null;
+        }
+
+        function ntFullSupportText(targetCoordinate, bbcode = false) {
+            const support = ntFullSupport(targetCoordinate);
+            if (!support) return 'Nenhum full localizado no TXT';
+            return [...support.players.values()]
+                .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+                .map((player) => `${bbcode ? `[player]${player.name}[/player]` : player.name} (${player.count} ${player.count === 1 ? 'full' : 'fulls'})`)
+                .join(', ');
+        }
+
         function distance(a, b) {
             return Math.hypot(Number(a.x) - Number(b.x), Number(a.y) - Number(b.y));
         }
@@ -10232,13 +10268,14 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....',
                     fakePlayers: '',
                     ntPlayers: '',
+                    ntFullPlanText: '',
                     defaultFakes: 1,
                     defaultFakeCatapults: 12,
                     targets: '',
                     ...JSON.parse(localStorage.getItem(configKey()) || '{}')
                 };
             } catch (_error) {
-                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, defaultFakeCatapults: 12, fakePlayers: '', ntPlayers: '', fullPlayerUsage: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
+                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, defaultFakeCatapults: 12, fakePlayers: '', ntPlayers: '', ntFullPlanText: '', fullPlayerUsage: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
             }
         }
 
@@ -10392,6 +10429,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 fullMessageNote: panel.querySelector('[name="full_message_note"]').value,
                 fakePlayers: panel.querySelector('[name="fake_players"]').value,
                 ntPlayers: panel.querySelector('[name="nt_players"]').value,
+                ntFullPlanText: panel.querySelector('[name="nt_full_plan_text"]').value,
                 defaultFakes: Math.max(1, num(panel.querySelector('[name="default_fakes"]').value)),
                 defaultFakeCatapults: Math.max(1, num(panel.querySelector('[name="default_fake_catapults"]').value)),
                 targets: panel.querySelector('[name="targets"]').value
@@ -10832,8 +10870,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function operationText() {
             if (state.operationMode === 'nt') {
-                const rows = state.assignments.map((item) => `[**]${item.sequence} [||] [player]${item.source.playerName}[/player] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatMorale(item.morale)} [||] ${formatDistance(item.distance)} campos [||] [coord]${item.source.coordinate}[/coord][/**]`).join('\n');
-                return `[b]PLANEJAMENTO DA OPERAÇÃO COM NT[/b]\n\n[b]Horário de chegada:[/b] ${formatOperationAtPrecise(state.operationAt) || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ALVO [||] MORAL [||] DISTÂNCIA [||] ALDEIA PRÓXIMA (REFERÊNCIA) [/**]\n${rows}\n[/table]\n\nA aldeia exibida é somente uma referência geográfica. O planejador não valida nobres nem NTs prontos.`;
+                const rows = state.assignments.map((item) => `[**]${item.sequence} [||] [player]${item.source.playerName}[/player] [||] [coord]${item.target.coordinate}[/coord] [||] ${formatMorale(item.morale)} [||] ${formatDistance(item.distance)} campos [||] [coord]${item.source.coordinate}[/coord] [||] ${ntFullSupportText(item.target.coordinate, true)}[/**]`).join('\n');
+                return `[b]PLANEJAMENTO DA OPERAÇÃO COM NT[/b]\n\n[b]Horário de chegada:[/b] ${formatOperationAtPrecise(state.operationAt) || 'A definir'}\n\n[table]\n[**] # [||] JOGADOR [||] ALVO [||] MORAL [||] DISTÂNCIA [||] ALDEIA PRÓXIMA (REFERÊNCIA) [||] FULLS DA OP [/**]\n${rows}\n[/table]\n\nA aldeia exibida é somente uma referência geográfica. O planejador não valida nobres nem NTs prontos.`;
             }
             if (state.operationMode === 'fake-catapult') {
                 const rows = groupFakeCatapultOrders(state.assignments).map((item) => `[**][player]${item.playerName}[/player] [||] [coord]${item.targetCoordinate}[/coord] [||] ${item.count} [||] ${item.building.label} [||] ${item.origins.map((origin) => `[coord]${origin.coordinate}[/coord] (${origin.count})`).join(', ')} [||] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores[/**]`).join('\n');
@@ -10906,7 +10944,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const copyBlock = group.orders.map((item) => item.target.coordinate).join('\n');
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO COM NT — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Os NTs devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} NT(s) em ${group.orders.length} alvo(s).\n\n[b]Montagem de cada NT:[/b]\n[list]\n[*]Divida 1 full entre os 4 comandos de nobre, para que os nobres fiquem laranjas.\n[*]Se tiver fulls disponíveis, coloque 4 fulls antes do NT.\n[*]Caso não tenha fulls disponíveis, envie somente o NT; cada aldeia já terá 14 fulls de defesa da tribo.\n[/list]\n\n[color=#c0392b][b]Se tiver mais nobres, me avise que arrumo mais alvos.[/b][/color]\n\n[table]\n[**] ALVO [||] MORAL [||] DISTÂNCIA [||] ALDEIA PRÓXIMA (REFERÊNCIA) [/**]\n${group.orders.map((item) => `[*] [coord]${item.target.coordinate}[/coord] [|] ${formatMorale(item.morale)} [|] ${formatDistance(item.distance)} campos [|] [coord]${item.source.coordinate}[/coord]`).join('\n')}\n[/table]\n\n[spoiler=Coordenadas de destino para copiar]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nA aldeia indicada na tabela é somente uma referência geográfica. Escolha as origens dos seus NTs e confirme com a liderança.`
+                    text: `[b]OPERAÇÃO COM NT — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Os NTs devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} NT(s) em ${group.orders.length} alvo(s).\n\n[b]Montagem de cada NT:[/b]\n[list]\n[*]Divida 1 full entre os 4 comandos de nobre, para que os nobres fiquem laranjas.\n[*]Se tiver fulls disponíveis, coloque 4 fulls antes do NT.\n[*]Caso não tenha fulls disponíveis, envie somente o NT; cada aldeia já terá 14 fulls de defesa da tribo.\n[/list]\n\n[color=#c0392b][b]Se tiver mais nobres, me avise que arrumo mais alvos.[/b][/color]\n\n[b]Importante:[/b] solicite aos jogadores indicados em cada alvo que compartilhem com você os comandos dos fulls da operação.\n\n[table]\n[**] ALVO [||] MORAL [||] DISTÂNCIA [||] ALDEIA PRÓXIMA (REFERÊNCIA) [||] JOGADORES DOS FULLS [/**]\n${group.orders.map((item) => `[*] [coord]${item.target.coordinate}[/coord] [|] ${formatMorale(item.morale)} [|] ${formatDistance(item.distance)} campos [|] [coord]${item.source.coordinate}[/coord] [|] ${ntFullSupportText(item.target.coordinate, true)}`).join('\n')}\n[/table]\n\n[spoiler=Coordenadas de destino para copiar]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nA aldeia indicada na tabela é somente uma referência geográfica. Escolha as origens dos seus NTs e confirme com a liderança.`
                 };
             });
         }
@@ -11107,6 +11145,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const panel = document.getElementById(SCRIPT_ID);
             const requested = [...state.ntPlayerRules.values()].reduce((total, rule) => total + rule.quantity, 0);
             const missing = state.ntPlayerUsage.reduce((total, item) => total + item.missing, 0);
+            const importedFulls = [...state.ntFullPlanByTarget.values()].reduce((total, item) => total + item.total, 0);
+            const matchedTargets = new Set(state.assignments.filter((item) => ntFullSupport(item.target.coordinate)).map((item) => item.target.coordinate)).size;
             const missingNotice = state.missingPlayers.length ? `<div class="cmo-error">Nicks não encontrados nos dados salvos: <strong>${state.missingPlayers.map(escapeHtml).join(', ')}</strong>. Confira a grafia ou atualize “Tropas da Tribo”.</div>` : '';
             const moraleNotice = state.moraleMode === 0
                 ? 'A moral está desativada neste mundo; todos os alvos são tratados como 100% e a distância decide a prioridade.'
@@ -11115,11 +11155,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     : 'A configuração de moral não pôde ser confirmada; quando possível, foi usada uma estimativa por pontos.';
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(state.ntPlayerRules.size)}</strong><span>Jogadores informados</span></div><div><strong>${formatNumber(state.candidates.length)}</strong><span>Aldeias de referência</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos disponíveis</span></div><div><strong>${formatNumber(requested)}</strong><span>NTs solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(state.assignments.length) : '—'}</strong><span>NTs distribuídos</span></div><div class="${planned && missing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(missing) : '—'}</strong><span>NTs faltantes</span></div></div>
-                <div class="cmo-data-info">${moraleNotice} As aldeias dos jogadores servem apenas para calcular a distância; <strong>nenhuma tropa, nobre ou NT pronto é validado</strong>. Cada alvo é entregue uma única vez.${state.ntUnassignedTargets.length ? `<br><strong>${formatNumber(state.ntUnassignedTargets.length)} alvo(s) sobraram sem uso porque a quantidade de alvos foi maior que a quantidade de NTs solicitada.</strong>` : ''}</div>
+                <div class="cmo-data-info">${moraleNotice} As aldeias dos jogadores servem apenas para calcular a distância; <strong>nenhuma tropa, nobre ou NT pronto é validado</strong>. Cada alvo é entregue uma única vez.<br>TXT de fulls: <strong>${formatNumber(importedFulls)} comando(s) em ${formatNumber(state.ntFullPlanByTarget.size)} alvo(s)</strong>; ${formatNumber(matchedTargets)} alvo(s) desta operação com NT foram encontrados no arquivo.${state.ntUnassignedTargets.length ? `<br><strong>${formatNumber(state.ntUnassignedTargets.length)} alvo(s) sobraram sem uso porque a quantidade de alvos foi maior que a quantidade de NTs solicitada.</strong>` : ''}</div>
                 ${missingNotice}
                 ${renderNtPlayerSummary()}
                 ${renderMap()}
-                ${planned ? `<section><div class="cmo-section-head"><div><h3>Distribuição dos NTs</h3><small>Prioridade: maior moral, depois menor distância.</small></div></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Jogador</th><th>Alvo</th><th>Dono do alvo</th><th>Pontos</th><th>Moral</th><th>Aldeia próxima (referência)</th><th>Distância</th><th>Chegada</th></tr></thead><tbody>${state.assignments.map((item) => `<tr><td>${escapeHtml(item.source.playerName)}</td><td><a href="${escapeHtml(mapUrl(item.target))}" target="_blank">${escapeHtml(item.target.coordinate)}</a></td><td>${escapeHtml(item.target.playerName || '—')}</td><td>${item.target.points === null ? '—' : formatNumber(item.target.points)}</td><td><strong>${formatMorale(item.morale)}</strong></td><td><a href="${escapeHtml(villageUrl(item.source))}" target="_blank">${escapeHtml(item.source.coordinate)}</a></td><td>${formatDistance(item.distance)} campos</td><td>${escapeHtml(formatOperationAtPrecise(state.operationAt) || 'A definir')}</td></tr>`).join('')}</tbody></table></div></section>
+                ${planned ? `<section><div class="cmo-section-head"><div><h3>Distribuição dos NTs</h3><small>Prioridade: maior moral, depois menor distância.</small></div></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Jogador</th><th>Alvo</th><th>Dono do alvo</th><th>Pontos</th><th>Moral</th><th>Aldeia próxima (referência)</th><th>Distância</th><th>Fulls encontrados no TXT</th><th>Chegada</th></tr></thead><tbody>${state.assignments.map((item) => `<tr><td>${escapeHtml(item.source.playerName)}</td><td><a href="${escapeHtml(mapUrl(item.target))}" target="_blank">${escapeHtml(item.target.coordinate)}</a></td><td>${escapeHtml(item.target.playerName || '—')}</td><td>${item.target.points === null ? '—' : formatNumber(item.target.points)}</td><td><strong>${formatMorale(item.morale)}</strong></td><td><a href="${escapeHtml(villageUrl(item.source))}" target="_blank">${escapeHtml(item.source.coordinate)}</a></td><td>${formatDistance(item.distance)} campos</td><td>${escapeHtml(ntFullSupportText(item.target.coordinate))}</td><td>${escapeHtml(formatOperationAtPrecise(state.operationAt) || 'A definir')}</td></tr>`).join('')}</tbody></table></div></section>
                 <section><div class="cmo-section-head"><div><h3>Mensagens por jogador</h3><small>Cada MP contém alvos, moral, distância, referência geográfica e horário.</small></div><div class="cmo-head-actions"><button type="button" class="btn" data-action="copy-operation">Copiar operação completa</button><button type="button" class="btn cmo-primary" data-action="export-messages">Baixar MPs em TXT</button></div></div><div class="cmo-messages">${state.messages.map((message, index) => `<article><header><strong>${escapeHtml(message.playerName)}</strong><button type="button" class="btn" data-copy-message="${index}">Copiar mensagem</button></header><textarea readonly>${escapeHtml(message.text)}</textarea></article>`).join('') || '<div class="cmo-empty">Nenhuma mensagem gerada.</div>'}</div></section>` : '<div class="cmo-empty">Informe os jogadores com as quantidades de NT e as coordenadas dos alvos.</div>'}`;
             panel.querySelector('[data-action="export-csv"]').disabled = !state.assignments.length;
         }
@@ -11192,7 +11232,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             if (!state.assignments.length) return;
             const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
             const rows = state.operationMode === 'nt'
-                ? [['Sequência', 'Jogador', 'Alvo', 'Defensor', 'Pontos do alvo', 'Moral', 'Aldeia próxima (referência)', 'Distância', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.target.coordinate, item.target.playerName || '', item.target.points ?? '', formatMorale(item.morale), item.source.coordinate, item.distance.toFixed(2), formatOperationAtPrecise(state.operationAt)])]
+                ? [['Sequência', 'Jogador', 'Alvo', 'Defensor', 'Pontos do alvo', 'Moral', 'Aldeia próxima (referência)', 'Distância', 'Jogadores dos fulls', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.target.coordinate, item.target.playerName || '', item.target.points ?? '', formatMorale(item.morale), item.source.coordinate, item.distance.toFixed(2), ntFullSupportText(item.target.coordinate), formatOperationAtPrecise(state.operationAt)])]
                 : state.operationMode === 'fake-catapult'
                 ? [['Sequência', 'Jogador', 'Origem', 'Alvo', 'Edifício', 'Catapultas', 'Exploradores', 'Distância', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.source.coordinate, item.target.coordinate, item.building.label, item.catapultCount, item.spyCount, item.distance.toFixed(2), formatOperationAtPrecise(state.operationAt)])]
                 : state.operationMode === 'fakes'
@@ -11228,10 +11268,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 state.fakeCatapultPlayerBuildings = new Map();
                 state.ntPlayerUsage = [];
                 state.ntUnassignedTargets = [];
+                state.ntFullPlanByTarget = new Map();
                 state.targetPointsWarning = '';
                 if (config.operationMode === 'nt') {
                     await Promise.all([loadWorldVillages(), loadWorldPlayers(), loadMoraleMode()]);
                     if (runId !== state.runSequence) return;
+                    state.ntFullPlanByTarget = parseNtFullPlan(config.ntFullPlanText).targets;
                     state.candidates = buildNtCandidates(config);
                     state.targets = parseTargets(config.targets, 1);
                     await loadTargetPointsAndCounts(state.targets, { ...config, quantityMode: 'fixed' });
@@ -11365,6 +11407,16 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             state.operationMode = mode;
         }
 
+        function updateNtFullPlanStatus(panel, fileName = '') {
+            const text = panel.querySelector('[name="nt_full_plan_text"]')?.value || '';
+            const parsed = parseNtFullPlan(text);
+            const status = panel.querySelector('[data-nt-full-plan-status]');
+            if (!status) return;
+            status.innerHTML = parsed.commands
+                ? `${fileName ? `<strong>${escapeHtml(fileName)}</strong>: ` : ''}${formatNumber(parsed.commands)} full(s) encontrado(s) em ${formatNumber(parsed.targets.size)} alvo(s). O TXT fica salvo até ser substituído.`
+                : 'Nenhum TXT de fulls carregado. Selecione o arquivo exportado pelo Montador de Fulls desta operação.';
+        }
+
         function mount() {
             state.payload = loadPayload();
             state.units = detectedUnits(state.payload);
@@ -11378,6 +11430,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     <div class="cmo-mode-card"><label><span>Tipo de operação</span><select name="operation_mode"><option value="fakes" ${config.operationMode === 'fakes' ? 'selected' : ''}>Operação de Fakes — distribuir coordenadas</option><option value="fake-catapult" ${config.operationMode === 'fake-catapult' ? 'selected' : ''}>Fake Catapulta — 50 catas + 5 exploradores</option><option value="nt" ${config.operationMode === 'nt' ? 'selected' : ''}>Operação com NT — distância e moral</option><option value="fulls" ${config.operationMode === 'fulls' ? 'selected' : ''}>Operação de Fulls — reservar tropas</option></select></label><p>Os quatro modos são independentes. Troque aqui sem perder as configurações já preenchidas.</p></div>
                     <div class="cmo-card" data-mode-only="fakes"><strong>Jogadores que receberão os fakes</strong><label><span>Um por linha — formato NICK; QUANTIDADE DE ALVOS</span><textarea name="fake_players" placeholder="Chonguera; 10\nTREVORWARSs; 8\nDurock">${escapeHtml(config.fakePlayers || '')}</textarea></label><small class="cmo-target-help"><strong>Com número:</strong> recebe até aquela quantidade de aldeias-alvo. <strong>Sem número:</strong> divide automaticamente os alvos que sobrarem. A forma antiga “Jogador1; Jogador2” continua aceita.</small></div>
                     <div class="cmo-card" data-mode-only="nt"><strong>Jogadores que enviarão NT</strong><label><span>Um por linha — formato NICK; QUANTIDADE DE NTS</span><textarea name="nt_players" placeholder="Chonguera; 3\nTREVORWARSs; 2\nDurock; 1">${escapeHtml(config.ntPlayers || '')}</textarea></label><small class="cmo-target-help">Cada NT informado recebe uma aldeia-alvo diferente. Se a quantidade for omitida, será considerado 1 NT. Nenhuma tropa ou nobre pronto será validado.</small></div>
+                    <div class="cmo-card" data-mode-only="nt"><strong>TXT da operação de fulls</strong><label><span>Selecione o TXT exportado pelo Montador de Fulls</span><input type="file" name="nt_full_plan_file" accept=".txt,text/plain"></label><textarea name="nt_full_plan_text" hidden>${escapeHtml(config.ntFullPlanText || '')}</textarea><small class="cmo-target-help" data-nt-full-plan-status></small><div class="cmo-actions"><button type="button" class="btn" data-action="clear-nt-full-plan">Remover TXT salvo</button></div><small class="cmo-target-help">O cruzamento usa destino e jogador de cada full. Na MP do NT aparecerá quem deve compartilhar os comandos daquele alvo.</small></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Definição dinâmica de full — mínimos totais (aldeia + fora)</strong><div class="cmo-unit-grid">${state.units.length ? state.units.map((unit) => `<label><span>${escapeHtml(unit.label)}</span><input type="number" min="0" step="1" data-unit="${unit.id}" value="${num(config.thresholds?.[unit.id] ?? unit.default)}" placeholder="0 = ignorar"></label>`).join('') : '<span>Carregue as tropas para detectar as unidades deste mundo.</span>'}</div></div>
                     <div class="cmo-card"><strong>Alvos da operação</strong><label><span>Coordenadas — uma por linha; quantidade individual opcional</span><textarea name="targets" placeholder="500|500\n501|501; 8">${escapeHtml(config.targets || '')}</textarea></label><small class="cmo-target-help" data-mode-only="fakes">Ex.: 501|501; 8 solicita 8 fakes para esse alvo. Sem número, usa a quantidade padrão abaixo.</small><small class="cmo-target-help" data-mode-only="fake-catapult">Ex.: 501|501; 12 solicita 12 fake catas: 4 na Fazenda, 4 no Armazém e 4 no Ferreiro.</small><small class="cmo-target-help" data-mode-only="nt">Informe somente as coordenadas. Cada aldeia pode ser designada para apenas um NT; números após a coordenada são ignorados neste modo.</small><small class="cmo-target-help" data-mode-only="fulls">Ex.: 501|501; 8 solicita 8 fulls somente para esse alvo.</small><div data-mode-only="fakes"><label><span>Quantidade padrão de fakes por aldeia-alvo</span><input type="number" min="1" name="default_fakes" value="${Math.max(1, num(config.defaultFakes || 1))}"></label></div><div data-mode-only="fake-catapult"><label><span>Quantidade padrão de fake catapulta por aldeia-alvo</span><input type="number" min="1" name="default_fake_catapults" value="${Math.max(1, num(config.defaultFakeCatapults || 12))}"></label><small class="cmo-target-help">Cada comando usa 50 catapultas + 5 exploradores. A divisão entre os três edifícios é automática.</small></div><div data-mode-only="fulls"><label><span>Como definir a quantidade</span><select name="quantity_mode"><option value="fixed" ${config.quantityMode !== 'points' ? 'selected' : ''}>Quantidade padrão para todos</option><option value="points" ${config.quantityMode === 'points' ? 'selected' : ''}>Usar quantidades definidas por faixa de pontos</option></select></label><label><span>Quantidade padrão de fulls por alvo (também usada como fallback)</span><input type="number" min="1" name="default_fulls" value="${Math.max(1, num(config.defaultFulls || 5))}"></label><div class="cmo-point-rules"><strong>Quantidades desta operação — preencha os três campos</strong><label><span>Abaixo de 6.000 pontos</span><input type="number" min="1" name="point_fulls_low" value="${num(config.pointFulls?.low) || ''}" placeholder="Ex.: 5"></label><label><span>De 6.000 a 9.000</span><input type="number" min="1" name="point_fulls_medium" value="${num(config.pointFulls?.medium) || ''}" placeholder="Ex.: 8 a 11"></label><label><span>Acima de 9.000 pontos</span><input type="number" min="1" name="point_fulls_high" value="${num(config.pointFulls?.high) || ''}" placeholder="Ex.: 12 a 15"></label></div></div></div>
                     <div class="cmo-card" data-mode-only="fulls,fake-catapult"><strong>Filtros e uso das aldeias de origem</strong><div class="cmo-unit-grid"><label><span>Permitir somente estes continentes</span><input name="include_continents" value="${escapeHtml(config.includeContinents || '')}" placeholder="Vazio = permitir todos"></label><label><span>Nunca utilizar estes continentes</span><input name="exclude_continents" value="${escapeHtml(config.excludeContinents || '')}" placeholder="Ex.: K55; K65"></label></div><small class="cmo-target-help">A primeira caixa limita as origens aos continentes informados. A segunda sempre remove os continentes informados.</small><label><span>Ignorar jogadores de origem — separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Jogador1; Jogador2">${escapeHtml(config.playerBlacklist || '')}</textarea></label><div data-mode-only="fulls"><label><span>Percentual de fulls reservado por jogador — um por linha</span><textarea name="full_player_usage" placeholder="Chonguera; 100\nJogador2; 50">${escapeHtml(config.fullPlayerUsage || '')}</textarea></label><small class="cmo-target-help">Formato: NICK; PERCENTUAL. Ex.: Chonguera; 100 reserva primeiro todos os fulls encontrados de Chonguera. Jogadores não informados dividem o restante.</small></div></div>
@@ -11390,7 +11443,29 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             host.prepend(panel);
             injectStyles();
             syncModeUi(panel);
+            updateNtFullPlanStatus(panel);
             panel.querySelector('[name="operation_mode"]').addEventListener('change', () => syncModeUi(panel));
+            panel.querySelector('[name="nt_full_plan_file"]').addEventListener('change', async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                try {
+                    const text = typeof file.text === 'function'
+                        ? await file.text()
+                        : await new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(String(reader.result || ''));
+                            reader.onerror = () => reject(reader.error || new Error('Falha ao ler o arquivo.'));
+                            reader.readAsText(file);
+                        });
+                    panel.querySelector('[name="nt_full_plan_text"]').value = text;
+                    updateNtFullPlanStatus(panel, file.name);
+                    saveConfig(readForm());
+                    UI.SuccessMessage?.(`TXT carregado: ${formatNumber(parseNtFullPlan(text).commands)} full(s) localizado(s).`);
+                } catch (error) {
+                    console.error('[Montador de Operações] Falha ao ler TXT de fulls:', error);
+                    UI.ErrorMessage?.('Não foi possível ler o TXT de fulls.');
+                }
+            });
             panel.addEventListener('click', (event) => {
                 const button = event.target.closest('button');
                 if (!button) return;
@@ -11399,6 +11474,14 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 if (button.dataset.action === 'export-csv') exportCsv();
                 if (button.dataset.action === 'export-messages') exportMessagesTxt();
                 if (button.dataset.action === 'copy-operation') copyText(operationText(), 'Operação copiada.');
+                if (button.dataset.action === 'clear-nt-full-plan') {
+                    panel.querySelector('[name="nt_full_plan_text"]').value = '';
+                    panel.querySelector('[name="nt_full_plan_file"]').value = '';
+                    state.ntFullPlanByTarget = new Map();
+                    updateNtFullPlanStatus(panel);
+                    saveConfig(readForm());
+                    UI.SuccessMessage?.('TXT de fulls removido.');
+                }
                 if (button.dataset.copyMessage !== undefined) {
                     const message = state.messages[num(button.dataset.copyMessage)];
                     if (message) copyText(message.text, `Mensagem de ${message.playerName} copiada.`);
