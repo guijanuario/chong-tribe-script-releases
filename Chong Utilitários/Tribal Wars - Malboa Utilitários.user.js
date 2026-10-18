@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.10.0
+// @version      4.10.1
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.43.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.43.1', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10052,6 +10052,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             fakePlayerRules: new Map(),
             fullPlayerRules: new Map(),
             fullPlayerUsage: [],
+            fakeCatapultPlayerBuildings: new Map(),
             worldVillages: [],
             worldPlayers: new Map(),
             moraleMode: null,
@@ -10626,44 +10627,79 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function buildFakeCatapultPlan(candidates, targets) {
-            const pool = candidates.map((source) => ({ source, remaining: source.capacity, used: 0 }));
-            const assignedByTarget = new Map(targets.map((target) => [target.coordinate, 0]));
+            const requestedByBuilding = new Map(FAKE_CATAPULT_BUILDINGS.map((building) => [building.id, 0]));
+            targets.forEach((target) => {
+                const counts = fakeCatapultBuildingCounts(target.count);
+                FAKE_CATAPULT_BUILDINGS.forEach((building) => requestedByBuilding.set(building.id, requestedByBuilding.get(building.id) + counts.get(building.id)));
+            });
+            const playerCapacity = new Map();
+            candidates.forEach((source) => {
+                const key = String(source.playerId || source.playerName);
+                if (!playerCapacity.has(key)) playerCapacity.set(key, { key, name: source.playerName, capacity: 0 });
+                playerCapacity.get(key).capacity += source.capacity;
+            });
+            const assignedCapacity = new Map(FAKE_CATAPULT_BUILDINGS.map((building) => [building.id, 0]));
+            const activeBuildings = FAKE_CATAPULT_BUILDINGS.filter((building) => requestedByBuilding.get(building.id) > 0);
+            const playerBuildings = new Map();
+            [...playerCapacity.values()]
+                .sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name))
+                .forEach((player) => {
+                    const building = [...activeBuildings].sort((a, b) =>
+                        (assignedCapacity.get(a.id) / requestedByBuilding.get(a.id)) - (assignedCapacity.get(b.id) / requestedByBuilding.get(b.id))
+                        || assignedCapacity.get(a.id) - assignedCapacity.get(b.id)
+                        || FAKE_CATAPULT_BUILDINGS.indexOf(a) - FAKE_CATAPULT_BUILDINGS.indexOf(b)
+                    )[0];
+                    if (!building) return;
+                    playerBuildings.set(player.key, building);
+                    assignedCapacity.set(building.id, assignedCapacity.get(building.id) + player.capacity);
+                });
+            const pool = candidates.map((source) => ({
+                source,
+                building: playerBuildings.get(String(source.playerId || source.playerName)),
+                remaining: source.capacity,
+                used: 0
+            }));
+            const assignedByTargetBuilding = new Map();
             const assignments = [];
             let progress = true;
             while (progress && pool.some((item) => item.remaining > 0)) {
                 progress = false;
                 targets.forEach((target) => {
-                    const assigned = assignedByTarget.get(target.coordinate) || 0;
-                    if (assigned >= target.count) return;
-                    const chosen = pool
-                        .filter((item) => item.remaining > 0)
-                        .sort((a, b) =>
-                            distance(a.source, target) - distance(b.source, target)
-                            || (a.used / a.source.capacity) - (b.used / b.source.capacity)
-                            || a.source.playerName.localeCompare(b.source.playerName)
-                            || a.source.coordinate.localeCompare(b.source.coordinate)
-                        )[0];
-                    if (!chosen) return;
-                    const building = FAKE_CATAPULT_BUILDINGS[assigned % FAKE_CATAPULT_BUILDINGS.length];
-                    chosen.remaining -= 1;
-                    chosen.used += 1;
-                    assignedByTarget.set(target.coordinate, assigned + 1);
-                    assignments.push({
-                        source: chosen.source,
-                        target,
-                        building,
-                        catapultCount: FAKE_CATAPULT_COST.catapult,
-                        spyCount: FAKE_CATAPULT_COST.spy,
-                        distance: distance(chosen.source, target),
-                        sequence: assignments.length + 1
+                    const requested = fakeCatapultBuildingCounts(target.count);
+                    FAKE_CATAPULT_BUILDINGS.forEach((building) => {
+                        const targetBuildingKey = `${target.coordinate}\u0000${building.id}`;
+                        const assigned = assignedByTargetBuilding.get(targetBuildingKey) || 0;
+                        if (assigned >= requested.get(building.id)) return;
+                        const chosen = pool
+                            .filter((item) => item.remaining > 0 && item.building?.id === building.id)
+                            .sort((a, b) =>
+                                distance(a.source, target) - distance(b.source, target)
+                                || (a.used / a.source.capacity) - (b.used / b.source.capacity)
+                                || a.source.playerName.localeCompare(b.source.playerName)
+                                || a.source.coordinate.localeCompare(b.source.coordinate)
+                            )[0];
+                        if (!chosen) return;
+                        chosen.remaining -= 1;
+                        chosen.used += 1;
+                        assignedByTargetBuilding.set(targetBuildingKey, assigned + 1);
+                        assignments.push({
+                            source: chosen.source,
+                            target,
+                            building,
+                            catapultCount: FAKE_CATAPULT_COST.catapult,
+                            spyCount: FAKE_CATAPULT_COST.spy,
+                            distance: distance(chosen.source, target),
+                            sequence: assignments.length + 1
+                        });
+                        progress = true;
                     });
-                    progress = true;
                 });
             }
             return {
                 assignments,
+                playerBuildings,
                 missing: targets.map((target) => {
-                    const assigned = assignedByTarget.get(target.coordinate) || 0;
+                    const assigned = FAKE_CATAPULT_BUILDINGS.reduce((total, building) => total + (assignedByTargetBuilding.get(`${target.coordinate}\u0000${building.id}`) || 0), 0);
                     return { target, assigned, missing: Math.max(0, target.count - assigned) };
                 })
             };
@@ -10688,8 +10724,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function operationText() {
             if (state.operationMode === 'fake-catapult') {
-                const rows = groupFakeCatapultOrders(state.assignments).map((item) => `[**][player]${item.playerName}[/player] [||] [coord]${item.sourceCoordinate}[/coord] [||] [coord]${item.targetCoordinate}[/coord] [||] ${item.building.label} [||] ${item.count} [||] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores[/**]`).join('\n');
-                return `[b]PLANEJAMENTO DA OPERAÇÃO DE FAKE CATAPULTA[/b]\n\n[b]Horário de chegada:[/b] ${formatOperationAtPrecise(state.operationAt) || 'A definir'}\n[b]Padrão de cada comando:[/b] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores\n\n[table]\n[**] JOGADOR [||] ORIGEM [||] ALVO [||] EDIFÍCIO [||] COMANDOS [||] TROPAS POR COMANDO [/**]\n${rows}\n[/table]\n\nNenhum ataque é enviado automaticamente pelo script.`;
+                const rows = groupFakeCatapultOrders(state.assignments).map((item) => `[**][player]${item.playerName}[/player] [||] [coord]${item.targetCoordinate}[/coord] [||] ${item.count} [||] ${item.building.label} [||] ${item.origins.map((origin) => `[coord]${origin.coordinate}[/coord] (${origin.count})`).join(', ')} [||] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores[/**]`).join('\n');
+                return `[b]PLANEJAMENTO DA OPERAÇÃO DE FAKE CATAPULTA[/b]\n\n[b]Horário de chegada:[/b] ${formatOperationAtPrecise(state.operationAt) || 'A definir'}\n[b]Padrão de cada comando:[/b] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores\n\n[table]\n[**] JOGADOR [||] ALVO [||] FAKES [||] EDIFÍCIO [||] ORIGENS [||] TROPAS POR COMANDO [/**]\n${rows}\n[/table]\n\nCada jogador permanece focado em um único edifício. Nenhum ataque é enviado automaticamente pelo script.`;
             }
             if (state.operationMode === 'fakes') {
                 const rows = state.assignments.map((item) => `[**]${item.sequence} [||] [player]${item.source.playerName}[/player] [||] [coord]${item.target.coordinate}[/coord] [||] ${item.fakeCount} [||] ${formatDistance(item.distance)} campos[/**]`).join('\n');
@@ -10750,23 +10786,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function groupFakeCatapultOrders(orders) {
             const grouped = new Map();
             orders.forEach((item) => {
-                const key = [item.source.playerId || item.source.playerName, item.source.coordinate, item.target.coordinate, item.building.id].join('|');
+                const key = [item.source.playerId || item.source.playerName, item.target.coordinate, item.building.id].join('\u0000');
                 if (!grouped.has(key)) grouped.set(key, {
                     playerName: item.source.playerName,
-                    sourceCoordinate: item.source.coordinate,
                     targetCoordinate: item.target.coordinate,
                     building: item.building,
                     count: 0,
-                    distance: item.distance
+                    origins: new Map()
                 });
-                grouped.get(key).count += 1;
+                const row = grouped.get(key);
+                row.count += 1;
+                row.origins.set(item.source.coordinate, (row.origins.get(item.source.coordinate) || 0) + 1);
             });
-            return [...grouped.values()].sort((a, b) =>
-                a.playerName.localeCompare(b.playerName)
-                || a.targetCoordinate.localeCompare(b.targetCoordinate)
-                || a.building.label.localeCompare(b.building.label)
-                || a.sourceCoordinate.localeCompare(b.sourceCoordinate)
-            );
+            return [...grouped.values()]
+                .map((item) => ({ ...item, origins: [...item.origins.entries()].map(([coordinate, count]) => ({ coordinate, count })).sort((a, b) => a.coordinate.localeCompare(b.coordinate)) }))
+                .sort((a, b) => a.playerName.localeCompare(b.playerName) || a.targetCoordinate.localeCompare(b.targetCoordinate) || a.building.label.localeCompare(b.building.label));
         }
 
         function buildFakeCatapultMessages() {
@@ -10778,19 +10812,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             });
             return [...players.values()].sort((a, b) => a.playerName.localeCompare(b.playerName)).map((group) => {
                 const rows = groupFakeCatapultOrders(group.orders);
-                const targetTotals = new Map();
-                group.orders.forEach((item) => {
-                    if (!targetTotals.has(item.target.coordinate)) targetTotals.set(item.target.coordinate, new Map());
-                    const buildings = targetTotals.get(item.target.coordinate);
-                    buildings.set(item.building.label, (buildings.get(item.building.label) || 0) + 1);
-                });
-                const copyBlock = [...targetTotals.entries()].map(([coordinate, buildings]) => {
-                    const details = FAKE_CATAPULT_BUILDINGS.map((building) => `${building.label}: ${buildings.get(building.label) || 0}`).join(' · ');
-                    return `${coordinate} — ${details}`;
-                }).join('\n');
+                const building = rows[0]?.building;
+                const copyBlock = rows.map((item) => `${item.targetCoordinate} - ${item.count} fake(s) - ${item.building.label} - origens: ${item.origins.map((origin) => `${origin.coordinate} (${origin.count})`).join(', ')}`).join('\n');
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO DE FAKE CATAPULTA — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Todos os comandos devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} fake(s) de catapulta.\n[b]Tropas por comando:[/b] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores.\n\n[spoiler=Resumo por alvo e edifício]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\n[table]\n[**] ORIGEM [||] ALVO [||] EDIFÍCIO A MIRAR [||] QUANTIDADE DE COMANDOS [||] DISTÂNCIA [/**]\n${rows.map((item) => `[*] [coord]${item.sourceCoordinate}[/coord] [|] [coord]${item.targetCoordinate}[/coord] [|] ${item.building.label} [|] ${item.count} [|] ${formatDistance(item.distance)} campos`).join('\n')}\n[/table]\n\nCada comando deve conter exatamente ${FAKE_CATAPULT_COST.catapult} catapultas e ${FAKE_CATAPULT_COST.spy} exploradores, mirando o edifício indicado. Nenhum ataque é enviado automaticamente pelo script.`
+                    text: `[b]OPERAÇÃO DE FAKE CATAPULTA — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Todos os comandos devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} fake(s) de catapulta.\n[b]Seu foco de edifício:[/b] ${building?.label || 'A definir'}\n[b]Tropas por comando:[/b] ${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores.\n\n[spoiler=Coordenadas, quantidades e edifício]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nCada alvo aparece uma única vez. O número entre parênteses após cada origem informa quantos comandos devem sair daquela aldeia. Cada comando deve conter exatamente ${FAKE_CATAPULT_COST.catapult} catapultas e ${FAKE_CATAPULT_COST.spy} exploradores, mirando sempre ${building?.label || 'o edifício indicado'}. Nenhum ataque é enviado automaticamente pelo script.`
                 };
             });
         }
@@ -10885,7 +10911,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function renderFakeCatapultPlayerSummary() {
             const grouped = new Map();
             state.candidates.forEach((source) => {
-                if (!grouped.has(source.playerName)) grouped.set(source.playerName, { villages: 0, available: 0, assigned: 0 });
+                if (!grouped.has(source.playerName)) grouped.set(source.playerName, { villages: 0, available: 0, assigned: 0, building: state.fakeCatapultPlayerBuildings.get(String(source.playerId || source.playerName)) });
                 const row = grouped.get(source.playerName);
                 row.villages += 1;
                 row.available += source.capacity;
@@ -10895,7 +10921,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 if (row) row.assigned += 1;
             });
             const rows = [...grouped.entries()].sort((a, b) => b[1].available - a[1].available || a[0].localeCompare(b[0]));
-            return `<section><div class="cmo-section-head"><div><h3>Fake catapulta por jogador</h3><small>Quantidade designada / capacidade disponível no momento do cálculo.</small></div><strong>${rows.length} jogador(es)</strong></div><div class="cmo-player-summary">${rows.map(([playerName, totals]) => `<span><b>${escapeHtml(playerName)}</b><em>${formatNumber(totals.villages)} aldeia(s) apta(s)</em><strong>${formatNumber(totals.assigned)} / ${formatNumber(totals.available)} fake(s) cata</strong></span>`).join('') || '<div class="cmo-empty">Nenhum fake catapulta disponível.</div>'}</div></section>`;
+            return `<section><div class="cmo-section-head"><div><h3>Fake catapulta por jogador</h3><small>Quantidade designada / capacidade disponível. Cada jogador recebe somente um edifício.</small></div><strong>${rows.length} jogador(es)</strong></div><div class="cmo-player-summary">${rows.map(([playerName, totals]) => `<span><b>${escapeHtml(playerName)}</b><em>${formatNumber(totals.villages)} aldeia(s) apta(s) · ${escapeHtml(totals.building?.label || 'sem designação')}</em><strong>${formatNumber(totals.assigned)} / ${formatNumber(totals.available)} fake(s) cata</strong></span>`).join('') || '<div class="cmo-empty">Nenhum fake catapulta disponível.</div>'}</div></section>`;
         }
 
         function renderFakeCatapultResults(planned) {
@@ -10906,7 +10932,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const assignedPlayers = new Set(state.assignments.map((item) => item.source.playerName)).size;
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(available)}</strong><span>Fake cata disponíveis</span></div><div><strong>${formatNumber(state.candidates.length)}</strong><span>Aldeias de origem</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos</span></div><div><strong>${formatNumber(requested)}</strong><span>Fake cata solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(state.assignments.length) : '—'}</strong><span>Fake cata distribuídos</span></div><div class="${planned && totalMissing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(totalMissing) : '—'}</strong><span>Fake cata faltantes</span></div><div><strong>${planned ? formatNumber(assignedPlayers) : '—'}</strong><span>Jogadores envolvidos</span></div></div>
-                <div class="cmo-data-info">Cada fake cata consome <strong>${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores</strong>. Os comandos de cada alvo são alternados entre Fazenda, Armazém e Ferreiro; com 12 comandos, ficam 4 em cada edifício. As origens mais próximas com capacidade restante são usadas primeiro. Nenhum ataque é enviado automaticamente.</div>
+                <div class="cmo-data-info">Cada fake cata consome <strong>${FAKE_CATAPULT_COST.catapult} catapultas + ${FAKE_CATAPULT_COST.spy} exploradores</strong>. Com 12 comandos, ficam 4 em Fazenda, 4 em Armazém e 4 em Ferreiro. Cada jogador permanece focado em somente um edifício e cada alvo aparece uma única vez em sua MP. Nenhum ataque é enviado automaticamente.</div>
                 ${renderFakeCatapultPlayerSummary()}
                 ${renderMap()}
                 ${renderFakeCatapultCandidates()}
@@ -11041,6 +11067,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 };
                 state.assignments = [];
                 state.messages = [];
+                state.fakeCatapultPlayerBuildings = new Map();
                 state.targetPointsWarning = '';
                 if (config.operationMode === 'fake-catapult') {
                     state.missingPlayers = [];
@@ -11056,6 +11083,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     if (planned && state.targets.length) {
                         const plan = buildFakeCatapultPlan(state.candidates, state.targets);
                         state.assignments = plan.assignments;
+                        state.fakeCatapultPlayerBuildings = plan.playerBuildings;
                         state.missing = plan.missing;
                         state.messages = buildFakeCatapultMessages();
                     }
