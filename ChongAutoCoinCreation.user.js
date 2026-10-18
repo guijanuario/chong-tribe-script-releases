@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong — Criação Automática de Moedas
 // @namespace    chong.auto.coin.creation
-// @version      1.0.0
+// @version      1.0.1
 // @description  Mantém a criação automática de moedas ativa na academia de uma aldeia escolhida.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -84,6 +84,7 @@
     function render() {
         const root = panel();
         if (!root) return;
+        positionPanel(root);
         const status = root.querySelector('[data-status]');
         status.textContent = state.running ? 'Verificando agora' : (state.config.enabled ? 'Ligado' : 'Desligado');
         status.style.color = state.running || state.config.enabled ? '#18751f' : '#a22';
@@ -96,6 +97,13 @@
         const toggle = root.querySelector('[data-toggle]');
         toggle.textContent = state.config.enabled ? 'Desligar' : 'Ligar nesta aldeia';
         toggle.className = state.config.enabled ? 'btn evt-cancel-btn' : 'btn btn-confirm-yes';
+    }
+
+    function positionPanel(root = panel()) {
+        if (!root) return;
+        const resourcePanel = document.getElementById('chong-resource-hourly');
+        const resourceHeight = resourcePanel && resourcePanel !== root ? resourcePanel.offsetHeight : 0;
+        root.style.bottom = `${38 + (resourceHeight ? resourceHeight + 8 : 0)}px`;
     }
 
     function createPanel() {
@@ -127,6 +135,7 @@
             </div>
         `;
         document.body.appendChild(root);
+        positionPanel(root);
 
         root.querySelector('[data-collapse]').addEventListener('click', (event) => {
             const body = root.querySelector('[data-body]');
