@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.11.0
+// @version      4.11.1
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.44.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.44.1', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10434,16 +10434,16 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             if (!allowedPlayers.size) throw new Error('Informe pelo menos um nick e a quantidade de NTs. Exemplo: Chonguera; 3');
             const foundPlayers = new Set();
             const candidates = [];
-            (state.payload?.results || []).forEach((player) => {
+            state.worldPlayers.forEach((player) => {
                 const normalized = normalizeName(player.name);
                 if (!allowedPlayers.has(normalized)) return;
-                foundPlayers.add(normalized);
-                (player.villageDetails || []).forEach((village) => {
-                    const coord = parseCoordinate(village.coordinate || village.name);
-                    if (!coord) return;
+                const villages = state.worldVillages.filter((village) => String(village.playerId) === String(player.id));
+                if (villages.length) foundPlayers.add(normalized);
+                villages.forEach((village) => {
+                    const coord = parseCoordinate(village.coordinate);
                     candidates.push({
                         id: String(village.id || ''),
-                        name: village.name || coord.coordinate,
+                        name: coord.coordinate,
                         ...coord,
                         continent: continentOf(coord),
                         playerId: String(player.id || ''),
@@ -10452,7 +10452,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 });
             });
             state.missingPlayers = [...allowedPlayers].filter((name) => !foundPlayers.has(name)).map((name) => playerRules.get(name)?.name || name);
-            if (!candidates.length) throw new Error('Nenhuma aldeia foi encontrada para os jogadores de NT informados. Confira os nicks e atualize “Tropas da Tribo”.');
+            if (!candidates.length) throw new Error('Nenhuma aldeia foi encontrada no mapa para os jogadores de NT informados. Confira a grafia dos nicks.');
             return candidates.sort((a, b) => a.playerName.localeCompare(b.playerName) || a.coordinate.localeCompare(b.coordinate));
         }
 
@@ -11212,9 +11212,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const runId = ++state.runSequence;
             try {
                 state.payload = loadPayload();
-                if (!state.payload) throw new Error('Tropas salvas não encontradas. Use “Carregar tropas e salvar” antes de montar a operação.');
                 state.units = detectedUnits(state.payload);
                 const config = readForm();
+                if (!state.payload && config.operationMode !== 'nt') throw new Error('Tropas salvas não encontradas. Use “Carregar tropas e salvar” antes de montar a operação.');
                 saveConfig(config);
                 state.operationMode = config.operationMode;
                 state.operationAt = config.operationAt;
@@ -11230,6 +11230,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 state.ntUnassignedTargets = [];
                 state.targetPointsWarning = '';
                 if (config.operationMode === 'nt') {
+                    await Promise.all([loadWorldVillages(), loadWorldPlayers(), loadMoraleMode()]);
+                    if (runId !== state.runSequence) return;
                     state.candidates = buildNtCandidates(config);
                     state.targets = parseTargets(config.targets, 1);
                     await loadTargetPointsAndCounts(state.targets, { ...config, quantityMode: 'fixed' });
