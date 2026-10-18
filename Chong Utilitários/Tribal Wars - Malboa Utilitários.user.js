@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Utilitários
 // @namespace    chonguera.tribalwars.utilities
-// @version      4.11.1
+// @version      4.11.2
 // @description  Motor unificado de utilitários e ferramentas de tribo para Tribal Wars
 // @author       Chong
 // @updateURL    https://raw.githubusercontent.com/guijanuario/chong-tribe-script-releases/main/Chong%20Utilit%C3%A1rios/Tribal%20Wars%20-%20Malboa%20Utilit%C3%A1rios.user.js
@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.44.1', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.44.2', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10906,7 +10906,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const copyBlock = group.orders.map((item) => item.target.coordinate).join('\n');
                 return {
                     ...group,
-                    text: `[b]OPERAÇÃO COM NT — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Os NTs devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} NT(s) em ${group.orders.length} alvo(s).\n\n[table]\n[**] ALVO [||] MORAL [||] DISTÂNCIA [||] ALDEIA PRÓXIMA (REFERÊNCIA) [/**]\n${group.orders.map((item) => `[*] [coord]${item.target.coordinate}[/coord] [|] ${formatMorale(item.morale)} [|] ${formatDistance(item.distance)} campos [|] [coord]${item.source.coordinate}[/coord]`).join('\n')}\n[/table]\n\n[spoiler=Coordenadas de destino para copiar]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nA aldeia indicada é somente a referência geográfica mais próxima usada no cálculo. Escolha as origens dos seus NTs e confirme com a liderança. O script não verifica se os nobres ou NTs estão prontos e não envia ataques automaticamente.`
+                    text: `[b]OPERAÇÃO COM NT — ALVOS DESIGNADOS[/b]\n\nOlá, [player]${group.playerName}[/player].\n\n[b]Os NTs devem chegar em:[/b] ${formatOperationAtPrecise(state.operationAt) || 'horário a definir pela liderança'}\n[b]Total solicitado:[/b] ${group.orders.length} NT(s) em ${group.orders.length} alvo(s).\n\n[b]Montagem de cada NT:[/b]\n[list]\n[*]Divida 1 full entre os 4 comandos de nobre, para que os nobres fiquem laranjas.\n[*]Se tiver fulls disponíveis, coloque 4 fulls antes do NT.\n[*]Caso não tenha fulls disponíveis, envie somente o NT; cada aldeia já terá 14 fulls de defesa da tribo.\n[/list]\n\n[color=#c0392b][b]Se tiver mais nobres, me avise que arrumo mais alvos.[/b][/color]\n\n[table]\n[**] ALVO [||] MORAL [||] DISTÂNCIA [||] ALDEIA PRÓXIMA (REFERÊNCIA) [/**]\n${group.orders.map((item) => `[*] [coord]${item.target.coordinate}[/coord] [|] ${formatMorale(item.morale)} [|] ${formatDistance(item.distance)} campos [|] [coord]${item.source.coordinate}[/coord]`).join('\n')}\n[/table]\n\n[spoiler=Coordenadas de destino para copiar]\n[code]\n${copyBlock}\n[/code]\n[/spoiler]\n\nA aldeia indicada na tabela é somente uma referência geográfica. Escolha as origens dos seus NTs e confirme com a liderança.`
                 };
             });
         }
