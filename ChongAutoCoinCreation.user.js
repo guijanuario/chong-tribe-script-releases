@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong — Criação Automática de Moedas
 // @namespace    chong.auto.coin.creation
-// @version      1.0.1
+// @version      1.0.2
 // @description  Mantém a criação automática de moedas ativa na academia de uma aldeia escolhida.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -25,7 +25,8 @@
     const state = {
         config: loadConfig(),
         running: false,
-        timer: null
+        timer: null,
+        refreshVisibleAcademy: false
     };
 
     function loadConfig() {
@@ -198,6 +199,12 @@
         return url.href;
     }
 
+    function isConfiguredAcademyVisible() {
+        const url = new URL(location.href);
+        return url.searchParams.get('screen') === 'snob'
+            && String(window.game_data?.village?.id || '') === String(state.config.villageId || '');
+    }
+
     function controlLabel(element) {
         return String(element.value || element.textContent || '').replace(/\s+/g, ' ').trim();
     }
@@ -310,6 +317,7 @@
             if (!result.active) throw new Error('O bloco de criação automática não foi encontrado nessa aldeia.');
             if (result.activated) {
                 state.config.lastMessage = 'Criação automática ativada com sucesso.';
+                state.refreshVisibleAcademy = isConfiguredAcademyVisible();
                 window.UI?.SuccessMessage?.('Criação automática ativada.');
             } else {
                 state.config.lastMessage = 'A criação automática já estava ligada.';
@@ -327,10 +335,15 @@
             state.config.lastMessage = `${captcha ? 'Acompanhamento pausado' : 'Falha na verificação'}: ${error.message || error}`;
             window.UI?.ErrorMessage?.(state.config.lastMessage);
         } finally {
+            const refreshVisibleAcademy = state.refreshVisibleAcademy;
+            state.refreshVisibleAcademy = false;
             state.running = false;
             releaseLock();
             saveConfig();
             schedule();
+            if (refreshVisibleAcademy) {
+                window.setTimeout(() => location.reload(), 800);
+            }
         }
     }
 
