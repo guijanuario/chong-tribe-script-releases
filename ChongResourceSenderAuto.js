@@ -16,8 +16,8 @@
         timer: null,
         sent: 0,
         observer: null,
-        minDelay: 1200,
-        maxDelay: 2000
+        minDelay: 250,
+        maxDelay: 350
     };
     window[INSTANCE_KEY] = state;
 
@@ -43,8 +43,8 @@
     }
 
     function randomDelay() {
-        const low = Math.max(800, Number(state.minDelay) || 1200);
-        const high = Math.max(low, Number(state.maxDelay) || 2000);
+        const low = Math.max(250, Number(state.minDelay) || 250);
+        const high = Math.max(low, Number(state.maxDelay) || 350);
         return Math.round(low + Math.random() * (high - low));
     }
 
@@ -135,8 +135,8 @@
         toolbar.innerHTML = `
             <strong>Chong — envio automático</strong>
             <button type="button" class="btn evt-cancel-btn" data-auto-toggle>Pausar envio automático</button>
-            <label>Intervalo mínimo <input type="number" min="0.8" step="0.1" value="1.2" data-auto-min style="width:58px"> s</label>
-            <label>máximo <input type="number" min="0.8" step="0.1" value="2.0" data-auto-max style="width:58px"> s</label>
+            <label>Intervalo mínimo <input type="number" min="0.25" step="0.05" value="0.25" data-auto-min style="width:58px"> s</label>
+            <label>máximo <input type="number" min="0.25" step="0.05" value="0.35" data-auto-max style="width:58px"> s</label>
             <span data-auto-status style="font-weight:bold;color:#176b25">Aguardando a lista de aldeias…</span>
         `;
         sender.prepend(toolbar);
@@ -146,10 +146,10 @@
             else resume();
         });
         toolbar.querySelector('[data-auto-min]').addEventListener('change', (event) => {
-            state.minDelay = Math.max(800, Number(event.target.value) * 1000 || 1200);
+            state.minDelay = Math.max(250, Number(event.target.value) * 1000 || 250);
         });
         toolbar.querySelector('[data-auto-max]').addEventListener('change', (event) => {
-            state.maxDelay = Math.max(state.minDelay, Number(event.target.value) * 1000 || 2000);
+            state.maxDelay = Math.max(state.minDelay, Number(event.target.value) * 1000 || 350);
         });
         updateToggle();
     }
