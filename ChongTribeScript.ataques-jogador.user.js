@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.6.0
+// @version      1.6.1
 // @description  Analisa ataques compartilhados nos perfis inimigos e mantém uma central local focada nas tribos adversárias escolhidas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -208,6 +208,7 @@
             impactLabel: '',
             ramMinutesPerField: null,
             commands: [],
+            observations: {},
         };
     }
 
@@ -215,7 +216,9 @@
         try {
             const parsed = JSON.parse(window.localStorage.getItem(operationStorageKey()) || 'null');
             if (!parsed || parsed.version !== OP_STORAGE_VERSION || !Array.isArray(parsed.commands)) return emptyOperationPlan();
-            return Object.assign(emptyOperationPlan(), parsed);
+            const plan = Object.assign(emptyOperationPlan(), parsed);
+            plan.observations = plan.observations && typeof plan.observations === 'object' && !Array.isArray(plan.observations) ? plan.observations : {};
+            return plan;
         } catch (_error) {
             return emptyOperationPlan();
         }
@@ -287,6 +290,7 @@
             impactLabel: cleanText(impactLine),
             ramMinutesPerField: null,
             commands: commands.sort(function (a, b) { return a.sequence - b.sequence; }),
+            observations: {},
         };
     }
 
@@ -1778,7 +1782,28 @@
         return Math.abs(arrival - impactTimestamp) <= OP_ARRIVAL_TOLERANCE_MS;
     }
 
-    function targetCoverage(dashboard, target) {
+    function operationActualCommands(plan, dashboard) {
+        const observations = plan.observations || {};
+        const observedTargets = new Set(Object.keys(observations));
+        const commands = dashboardCommands(dashboard).filter(function (command) {
+            return !observedTargets.has(command.target || command.villageCoordinate || '');
+        });
+        Object.values(observations).forEach(function (observation) {
+            (observation.commands || []).forEach(function (command) {
+                commands.push(Object.assign({}, command, {
+                    target: command.target || observation.target,
+                    villageCoordinate: command.villageCoordinate || observation.target,
+                    capturedAt: observation.capturedAt,
+                    operationObservation: true,
+                }));
+            });
+        });
+        return commands;
+    }
+
+    function targetCoverage(plan, dashboard, target) {
+        const observation = plan.observations?.[target];
+        if (observation?.capturedAt) return observation;
         const snapshots = Object.values(dashboard.snapshots).filter(function (snapshot) {
             const villages = Array.isArray(snapshot.villages) ? snapshot.villages : [];
             if (villages.some(function (village) { return village.coordinate === target; })) return true;
@@ -1796,13 +1821,13 @@
     }
 
     function evaluateOperation(plan, dashboard) {
-        const actual = dashboardCommands(dashboard);
+        const actual = operationActualCommands(plan, dashboard);
         const used = new Set();
         const rows = plan.commands.map(function (expected) {
             return {
                 expected: expected,
                 deadline: operationDeadline(expected, plan),
-                coverage: targetCoverage(dashboard, expected.target),
+                coverage: targetCoverage(plan, dashboard, expected.target),
                 actual: null,
                 status: '',
             };
@@ -1943,9 +1968,10 @@
             <section class="ctc-op-import">
                 <label>Substituir TXT da operação<input type="file" accept=".txt,text/plain" data-op-file></label>
                 <label>Velocidade do aríete<input type="number" min="0.01" step="0.01" value="${escapeHtml(plan.ramMinutesPerField || 30)}" data-op-speed></label>
-                <div><button class="ctc-btn primary" data-central-action="op-enrich"${operationState.busy ? ' disabled' : ''}>${operationState.busy ? 'Conferindo…' : 'Conferir origens'}</button> <button class="ctc-btn" data-central-action="op-clear"${operationState.busy ? ' disabled' : ''}>Remover OP</button></div>
+                <div><button class="ctc-btn primary" data-central-action="op-scan"${operationState.busy ? ' disabled' : ''}>${operationState.busy ? 'Conferindo…' : 'Conferir alvos agora'}</button> <button class="ctc-btn" data-central-action="op-enrich"${operationState.busy ? ' disabled' : ''}>Conferir origens</button> <button class="ctc-btn" data-central-action="op-clear"${operationState.busy ? ' disabled' : ''}>Remover OP</button></div>
             </section>
             <div class="ctc-notice${operationState.error ? ' error' : ''}">${escapeHtml(operationState.message || `${plan.fileName} · impacto ${formatOperationTimestamp(plan.impactTimestamp)} · ${formatNumber(plan.commands.length)} comando(s) esperados. A tolerância do horário de chegada é de 5 minutos.`)}</div>
+            <div class="ctc-notice">“Conferir alvos agora” consulta diretamente cada aldeia de destino e atualiza quem enviou ou não. Depois, “Conferir origens” tenta confirmar de qual aldeia saiu cada comando quando esse detalhe estiver compartilhado pelo jogo.</div>
             <div class="ctc-op-grid">
                 <div class="ctc-op-stat"><strong>${formatNumber(plan.commands.length)}</strong><span>Comandos esperados</span></div>
                 <div class="ctc-op-stat"><strong>${formatNumber(totals.sent)}</strong><span>Enviados/detectados</span></div>
@@ -2016,6 +2042,95 @@
         });
     }
 
+    async function loadOperationTargetMap(targets) {
+        const response = await window.fetch(new URL('/map/village.txt', window.location.origin).toString(), {
+            credentials: 'same-origin',
+            cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('Não foi possível localizar as aldeias-alvo no mapa (HTTP ' + response.status + ').');
+        const wanted = new Set(targets);
+        const found = {};
+        (await response.text()).split(/\r?\n/).forEach(function (line) {
+            if (!line) return;
+            const columns = line.split(',');
+            const coordinate = cleanText(columns[2]) + '|' + cleanText(columns[3]);
+            if (!wanted.has(coordinate)) return;
+            found[coordinate] = {
+                id: cleanText(columns[0]),
+                target: coordinate,
+                ownerId: cleanText(columns[4]),
+            };
+        });
+        return found;
+    }
+
+    function operationVillageUrl(villageId) {
+        const url = new URL('/game.php', window.location.origin);
+        const currentVillage = cleanText(window.game_data?.village?.id || new URLSearchParams(window.location.search).get('village'));
+        if (currentVillage) url.searchParams.set('village', currentVillage);
+        url.searchParams.set('screen', 'info_village');
+        url.searchParams.set('id', villageId);
+        return url.toString();
+    }
+
+    async function scanOperationTargets() {
+        if (operationState.busy) return;
+        const plan = loadOperationPlan();
+        const targets = uniqueSorted(plan.commands.map(function (command) { return command.target; }));
+        if (!targets.length) {
+            operationState.message = 'Importe primeiro o TXT da operação.';
+            operationState.error = true;
+            renderDashboard();
+            return;
+        }
+        operationState.busy = true;
+        operationState.error = false;
+        let completed = 0;
+        let failures = 0;
+        try {
+            operationState.message = 'Localizando ' + formatNumber(targets.length) + ' aldeia(s)-alvo no mapa…';
+            renderDashboard();
+            const targetMap = await loadOperationTargetMap(targets);
+            for (let index = 0; index < targets.length; index += 1) {
+                const target = targets[index];
+                const village = targetMap[target];
+                operationState.message = 'Consultando alvo ' + formatNumber(index + 1) + ' de ' + formatNumber(targets.length) + ': ' + target + '…';
+                renderDashboard();
+                if (!village?.id) {
+                    failures += 1;
+                    continue;
+                }
+                try {
+                    const url = operationVillageUrl(village.id);
+                    const parsed = parseVillageDocument(await fetchDocument(url), url);
+                    plan.observations[target] = {
+                        target: target,
+                        villageId: village.id,
+                        ownerId: village.ownerId,
+                        capturedAt: Date.now(),
+                        commands: parsed.commands.filter(function (command) { return command.kind === 'attack'; }).map(serializableCommand),
+                    };
+                    completed += 1;
+                    saveOperationPlan(plan);
+                } catch (error) {
+                    failures += 1;
+                    if (error.code === 'BOT_PROTECTION') throw error;
+                    console.error('[Chong Tribe Script — Conferência da OP]', target, error);
+                }
+                if (index + 1 < targets.length) await requestPause();
+            }
+            operationState.message = formatNumber(completed) + ' alvo(s) consultado(s) agora' + (failures ? ' · ' + formatNumber(failures) + ' falha(s). Refaça a conferência para tentar novamente.' : '. O painel foi recalculado com a coleta nova.');
+            operationState.error = failures > 0;
+        } catch (error) {
+            operationState.message = error.message || 'A conferência automática foi interrompida.';
+            operationState.error = true;
+        } finally {
+            operationState.busy = false;
+            saveOperationPlan(plan);
+            renderDashboard();
+        }
+    }
+
     async function enrichOperationDetails() {
         if (operationState.busy) return;
         const plan = loadOperationPlan();
@@ -2024,7 +2139,15 @@
         const pending = [];
         Object.values(dashboard.snapshots).forEach(function (snapshot) {
             (snapshot.commands || []).forEach(function (command) {
-                const key = normalize(command.player) + '\u0000' + (command.target || command.villageCoordinate || '');
+                const target = command.target || command.villageCoordinate || '';
+                if (plan.observations?.[target]) return;
+                const key = normalize(command.player) + '\u0000' + target;
+                if (command.kind === 'attack' && expectedKeys.has(key) && command.detailUrl && !command.origin) pending.push(command);
+            });
+        });
+        Object.values(plan.observations || {}).forEach(function (observation) {
+            (observation.commands || []).forEach(function (command) {
+                const key = normalize(command.player) + '\u0000' + (command.target || command.villageCoordinate || observation.target || '');
                 if (command.kind === 'attack' && expectedKeys.has(key) && command.detailUrl && !command.origin) pending.push(command);
             });
         });
@@ -2044,6 +2167,7 @@
                 await enrichAttackDetail(command);
                 completed += 1;
                 saveDashboard(dashboard);
+                saveOperationPlan(plan);
                 if (completed < pending.length) await requestPause();
             }
             operationState.message = `${formatNumber(completed)} detalhe(s) conferido(s).`;
@@ -2053,6 +2177,7 @@
         } finally {
             operationState.busy = false;
             saveDashboard(dashboard);
+            saveOperationPlan(plan);
             renderDashboard();
         }
     }
@@ -2274,6 +2399,7 @@
             if (button.dataset.centralAction === 'refresh') renderDashboard();
             if (button.dataset.centralAction === 'export') exportDashboardCsv();
             if (button.dataset.centralAction === 'op-export') exportOperationConference();
+            if (button.dataset.centralAction === 'op-scan') scanOperationTargets();
             if (button.dataset.centralAction === 'op-enrich') enrichOperationDetails();
             if (button.dataset.centralAction === 'op-clear') {
                 if (window.confirm('Remover o TXT e a conferência desta operação? Os comandos coletados continuarão salvos.')) {
