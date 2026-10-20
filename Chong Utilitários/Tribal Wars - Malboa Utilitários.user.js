@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.5', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.6', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3882,13 +3882,43 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function readStoredPayload() {
             const preferred = getStorageKey();
-            for (const key of getCompatibleStorageKeys()) {
+            const world = String(window.game_data?.world || window.location.hostname);
+            const worldPrefix = `${STORAGE_PREFIX}:${world}:`;
+            const currentMemberIds = new Set(state.members.map((member) => String(member.id)));
+            const candidates = [];
+            const keys = [preferred];
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (key?.startsWith(worldPrefix) && key !== preferred && !key.includes(':strategic-settings')) keys.push(key);
+            }
+            for (const key of keys) {
                 const raw = window.localStorage.getItem(key);
                 if (!raw) continue;
-                if (key !== preferred) window.localStorage.setItem(preferred, raw);
-                return raw;
+                try {
+                    const payload = JSON.parse(raw);
+                    if (payload?.version !== 2 || !Array.isArray(payload.results) || !payload.results.length) continue;
+                    const overlap = payload.results.reduce((total, result) => total + Number(currentMemberIds.has(String(result?.id || ''))), 0);
+                    if (key !== preferred && overlap <= 0) continue;
+                    candidates.push({ raw, key, overlap, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                } catch (_error) {
+                    // Uma chave inválida não impede a leitura das demais.
+                }
             }
-            return null;
+            candidates.sort((a, b) => Number(b.key === preferred) - Number(a.key === preferred)
+                || b.overlap - a.overlap
+                || b.savedAt - a.savedAt);
+            const selected = candidates[0];
+            if (!selected) return null;
+            if (selected.key !== preferred) {
+                try {
+                    window.localStorage.setItem(preferred, selected.raw);
+                } catch (error) {
+                    // A cópia é apenas uma migração. Os dados encontrados continuam
+                    // válidos e devem ser carregados mesmo quando a cota está cheia.
+                    console.warn('[Tropas da Tribo] Dados encontrados em uma chave anterior; não houve espaço para migrá-los:', error);
+                }
+            }
+            return selected.raw;
         }
 
         function createStoredPayload(savedAt = new Date().toISOString()) {
