@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.6.1
+// @version      1.6.2
 // @description  Analisa ataques compartilhados nos perfis inimigos e mantém uma central local focada nas tribos adversárias escolhidas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -25,6 +25,9 @@
     const REQUEST_DELAY_MS = 1400;
     const REQUEST_JITTER_MS = 700;
     const REQUEST_CONCURRENCY = 1;
+    const OP_SCAN_CONCURRENCY = 3;
+    const OP_SCAN_DELAY_MS = 300;
+    const OP_SCAN_JITTER_MS = 200;
     const TYPE_ORDER = ['noble', 'large', 'medium', 'small', 'unknown'];
     const TYPE_LABELS = {
         noble: 'Possível nobre',
@@ -2087,38 +2090,60 @@
         operationState.error = false;
         let completed = 0;
         let failures = 0;
+        let cursor = 0;
+        let processed = 0;
+        let fatalError = null;
+        let lastRenderedAt = 0;
         try {
             operationState.message = 'Localizando ' + formatNumber(targets.length) + ' aldeia(s)-alvo no mapa…';
             renderDashboard();
             const targetMap = await loadOperationTargetMap(targets);
-            for (let index = 0; index < targets.length; index += 1) {
-                const target = targets[index];
-                const village = targetMap[target];
-                operationState.message = 'Consultando alvo ' + formatNumber(index + 1) + ' de ' + formatNumber(targets.length) + ': ' + target + '…';
-                renderDashboard();
-                if (!village?.id) {
-                    failures += 1;
-                    continue;
+            async function worker() {
+                while (!fatalError) {
+                    const index = cursor;
+                    cursor += 1;
+                    if (index >= targets.length) return;
+                    const target = targets[index];
+                    const village = targetMap[target];
+                    const now = Date.now();
+                    if (index === 0 || now - lastRenderedAt > 650) {
+                        operationState.message = 'Conferência rápida: ' + formatNumber(processed) + ' de ' + formatNumber(targets.length) + ' alvo(s) concluído(s) · consultando ' + target + '…';
+                        lastRenderedAt = now;
+                        renderDashboard();
+                    }
+                    if (!village?.id) {
+                        failures += 1;
+                        processed += 1;
+                        continue;
+                    }
+                    try {
+                        const url = operationVillageUrl(village.id);
+                        const parsed = parseVillageDocument(await fetchDocument(url), url);
+                        plan.observations[target] = {
+                            target: target,
+                            villageId: village.id,
+                            ownerId: village.ownerId,
+                            capturedAt: Date.now(),
+                            commands: parsed.commands.filter(function (command) { return command.kind === 'attack'; }).map(serializableCommand),
+                        };
+                        completed += 1;
+                    } catch (error) {
+                        failures += 1;
+                        if (error.code === 'BOT_PROTECTION') {
+                            fatalError = error;
+                            return;
+                        }
+                        console.error('[Chong Tribe Script — Conferência da OP]', target, error);
+                    }
+                    processed += 1;
+                    if (processed % 12 === 0) saveOperationPlan(plan);
+                    if (cursor < targets.length && !fatalError) {
+                        await sleep(OP_SCAN_DELAY_MS + Math.floor(Math.random() * OP_SCAN_JITTER_MS));
+                    }
                 }
-                try {
-                    const url = operationVillageUrl(village.id);
-                    const parsed = parseVillageDocument(await fetchDocument(url), url);
-                    plan.observations[target] = {
-                        target: target,
-                        villageId: village.id,
-                        ownerId: village.ownerId,
-                        capturedAt: Date.now(),
-                        commands: parsed.commands.filter(function (command) { return command.kind === 'attack'; }).map(serializableCommand),
-                    };
-                    completed += 1;
-                    saveOperationPlan(plan);
-                } catch (error) {
-                    failures += 1;
-                    if (error.code === 'BOT_PROTECTION') throw error;
-                    console.error('[Chong Tribe Script — Conferência da OP]', target, error);
-                }
-                if (index + 1 < targets.length) await requestPause();
             }
+            await Promise.all(Array.from({ length: Math.min(OP_SCAN_CONCURRENCY, targets.length) }, worker));
+            if (fatalError) throw fatalError;
             operationState.message = formatNumber(completed) + ' alvo(s) consultado(s) agora' + (failures ? ' · ' + formatNumber(failures) + ' falha(s). Refaça a conferência para tentar novamente.' : '. O painel foi recalculado com a coleta nova.');
             operationState.error = failures > 0;
         } catch (error) {
