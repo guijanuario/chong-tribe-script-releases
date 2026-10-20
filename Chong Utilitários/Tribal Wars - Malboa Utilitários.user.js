@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.2', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.3', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -6664,16 +6664,47 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function findTroopStoragePayload() {
             const preferred = window.localStorage.getItem(troopStorageKey());
-            if (preferred) return preferred;
-            const world = String(window.game_data?.world || window.location.hostname);
-            for (let index = 0; index < window.localStorage.length; index += 1) {
-                const key = window.localStorage.key(index);
-                if (key?.includes('_tropas_tribo_v2:') && key.includes(`:${world}:`)) {
-                    const raw = window.localStorage.getItem(key);
-                    if (raw) return raw;
+            if (preferred) {
+                try {
+                    const payload = JSON.parse(preferred);
+                    if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) return preferred;
+                } catch (_error) {
+                    // Tenta uma versão restaurável abaixo.
                 }
             }
-            return null;
+            const world = String(window.game_data?.world || window.location.hostname);
+            const currentSnapshotPrefix = `${troopSnapshotStoragePrefix()}:`;
+            const snapshots = [];
+            const worldCaches = [];
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (key?.startsWith(currentSnapshotPrefix) && !key.endsWith(':index')) {
+                    const raw = window.localStorage.getItem(key);
+                    try {
+                        const payload = JSON.parse(raw || 'null');
+                        if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) {
+                            snapshots.push({ raw, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                        }
+                    } catch (_error) {
+                        // Snapshot inválido é ignorado.
+                    }
+                    continue;
+                }
+                if (key?.includes('_tropas_tribo_v2:') && key.includes(`:${world}:`)) {
+                    const raw = window.localStorage.getItem(key);
+                    try {
+                        const payload = JSON.parse(raw || 'null');
+                        if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) {
+                            worldCaches.push({ raw, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                        }
+                    } catch (_error) {
+                        // Cache inválido é ignorado.
+                    }
+                }
+            }
+            snapshots.sort((a, b) => b.savedAt - a.savedAt);
+            worldCaches.sort((a, b) => b.savedAt - a.savedAt);
+            return snapshots[0]?.raw || worldCaches[0]?.raw || null;
         }
 
         function loadTroopIndex() {
@@ -7809,7 +7840,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 await new Promise((resolve) => window.setTimeout(resolve, 0));
                 const troopData = loadTroopIndex();
                 state.troopDataInfo = { count: troopData.count, savedAt: troopData.savedAt };
-                if (!troopData.count) state.resultFilter = 'missing';
+                if (!troopData.count) {
+                    throw new Error('Não encontrei tropas salvas nem uma versão restaurável. Abra “Tropas da Tribo” e use “Carregar e validar origens” antes de analisar o Blind.');
+                }
                 const riskCalculation = calculateRisks(eligibleAlliedVillages, eligibleEnemyVillages, minutesPerField, allies);
                 state.mapEnemies = riskCalculation.threateningEnemies;
                 state.threatRelations = riskCalculation.threatRelations;
@@ -8402,6 +8435,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         const SCRIPT_ID = 'chonguera-distribuidor-apoios';
         const TROOP_STORAGE_PREFIX = 'chonguera_tropas_tribo_v2';
+        const TROOP_HISTORY_SNAPSHOT_PREFIX = 'chonguera_tropas_tribo_snapshots_v1';
         const AUDIT_STORAGE_PREFIX = 'chonguera_auditoria_apoios_v1';
         const AUDIT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const BLIND_STORAGE_PREFIX = 'chonguera_blind_preventivo_result';
@@ -8494,6 +8528,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     if (!raw) continue;
                     try {
                         const payload = JSON.parse(raw);
+                        if (prefix === TROOP_STORAGE_PREFIX
+                            && (payload?.version !== 2 || !Array.isArray(payload.results) || !payload.results.length)) continue;
                         const payloadAlly = String(payload?.allyId || '');
                         const allyMatch = key === exactKey
                             || currentAlly === 'tribo-atual'
@@ -8505,7 +8541,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     }
                 }
             }
-            if (!candidates.length) return null;
+            if (!candidates.length) return prefix === TROOP_STORAGE_PREFIX ? findLatestTroopSnapshotPayload() : null;
             const matching = candidates.filter((candidate) => candidate.allyMatch);
             const eligible = matching.length ? matching : candidates;
             eligible.sort((a, b) => b.savedAt - a.savedAt
@@ -8513,8 +8549,30 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return eligible[0].raw;
         }
 
+        function findLatestTroopSnapshotPayload() {
+            const snapshotPrefix = `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${worldId()}:${allyId()}:`;
+            const candidates = [];
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (!key?.startsWith(snapshotPrefix) || key.endsWith(':index')) continue;
+                const raw = window.localStorage.getItem(key);
+                try {
+                    const payload = JSON.parse(raw || 'null');
+                    if (payload?.version !== 2 || !Array.isArray(payload.results) || !payload.results.length) continue;
+                    candidates.push({ raw, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                } catch (_error) {
+                    // Snapshot inválido não pode alimentar o planejamento.
+                }
+            }
+            candidates.sort((a, b) => b.savedAt - a.savedAt);
+            return candidates[0]?.raw || null;
+        }
+
         function isUsableBlindPayload(payload) {
-            return [1, 2, 3].includes(payload?.version) && Array.isArray(payload.needs);
+            if (![1, 2, 3].includes(payload?.version) || !Array.isArray(payload.needs)) return false;
+            // Desde a versão 3, sourceTroopsSavedAt nulo identifica uma análise feita
+            // sem a coleta de tropas. Ela não pode ser distribuída com segurança.
+            return payload.version !== 3 || payload.sourceTroopsSavedAt !== null;
         }
 
         function blindSnapshotLabel(payload) {
