@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chong Tribe Script — Ataques por Jogador
 // @namespace    chongtribescript.ataques.jogador
-// @version      1.5.0
+// @version      1.6.0
 // @description  Analisa ataques compartilhados nos perfis inimigos e mantém uma central local focada nas tribos adversárias escolhidas.
 // @author       Chong Tribe Script
 // @match        https://*.tribalwars.com.br/game.php*
@@ -17,6 +17,8 @@
     const SCRIPT_ID = 'cts-ataques-jogador';
     const CENTRAL_ID = 'cts-central-comandos-tribo';
     const DASHBOARD_STORAGE_VERSION = 2;
+    const OP_STORAGE_VERSION = 1;
+    const OP_ARRIVAL_TOLERANCE_MS = 5 * 60 * 1000;
     const SNAPSHOT_STALE_MS = 12 * 60 * 60 * 1000;
     const AUTO_MIN_INTERVAL_SECONDS = 20;
     const AUTO_DEFAULT_INTERVAL_SECONDS = 30;
@@ -63,6 +65,7 @@
     };
 
     const centralState = {
+        view: 'dashboard',
         search: '',
         attacker: 'all',
         victim: 'all',
@@ -72,6 +75,14 @@
         message: '',
         error: false,
         autoInterval: AUTO_DEFAULT_INTERVAL_SECONDS,
+    };
+
+    const operationState = {
+        search: '',
+        status: 'all',
+        busy: false,
+        message: '',
+        error: false,
     };
 
     function cleanText(value) {
@@ -182,6 +193,140 @@
         }
     }
 
+    function operationStorageKey() {
+        return ['cts', 'conferencia-op', OP_STORAGE_VERSION, worldId(), allyId()].join(':');
+    }
+
+    function emptyOperationPlan() {
+        return {
+            version: OP_STORAGE_VERSION,
+            world: worldId(),
+            allyId: allyId(),
+            fileName: '',
+            importedAt: 0,
+            impactTimestamp: null,
+            impactLabel: '',
+            ramMinutesPerField: null,
+            commands: [],
+        };
+    }
+
+    function loadOperationPlan() {
+        try {
+            const parsed = JSON.parse(window.localStorage.getItem(operationStorageKey()) || 'null');
+            if (!parsed || parsed.version !== OP_STORAGE_VERSION || !Array.isArray(parsed.commands)) return emptyOperationPlan();
+            return Object.assign(emptyOperationPlan(), parsed);
+        } catch (_error) {
+            return emptyOperationPlan();
+        }
+    }
+
+    function saveOperationPlan(plan) {
+        try {
+            window.localStorage.setItem(operationStorageKey(), JSON.stringify(plan));
+            return true;
+        } catch (error) {
+            console.error('[Chong Tribe Script — Conferência da OP] Não foi possível salvar o planejamento.', error);
+            return false;
+        }
+    }
+
+    function parseBrazilianTimestamp(value) {
+        const match = String(value || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\D+(\d{1,2}):(\d{2})(?::(\d{2}))?(?::(\d{1,3}))?/);
+        if (!match) return null;
+        const timestamp = new Date(
+            Number(match[3]), Number(match[2]) - 1, Number(match[1]),
+            Number(match[4]), Number(match[5]), Number(match[6] || 0), Number(String(match[7] || '0').padEnd(3, '0'))
+        ).getTime();
+        return Number.isFinite(timestamp) ? timestamp : null;
+    }
+
+    function formatOperationTimestamp(timestamp) {
+        if (!timestamp) return '—';
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return '—';
+        return new Intl.DateTimeFormat('pt-BR', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        }).format(date);
+    }
+
+    function parseOperationPlan(text, fileName) {
+        const source = String(text || '');
+        const impactLine = source.match(/Data e hora do impacto:\[\/b\]\s*([^\r\n]+)/i)?.[1]
+            || source.match(/(?:impacto|chegada)[^\r\n]*?(\d{1,2}\/\d{1,2}\/\d{4}[^\r\n]*)/i)?.[1]
+            || '';
+        const impactTimestamp = parseBrazilianTimestamp(impactLine);
+        if (!impactTimestamp) throw new Error('Não encontrei a data e hora do impacto no arquivo da operação.');
+        const commands = [];
+        source.split(/\r?\n/).forEach(function (line) {
+            const sequence = Number(line.match(/^\s*\[\*\*\]\s*(\d+)/)?.[1] || 0);
+            const player = cleanText(line.match(/\[player\]([^\]]+)\[\/player\]/i)?.[1]);
+            const coordinates = Array.from(line.matchAll(/\[coord\](\d{1,3}\|\d{1,3})\[\/coord\]/gi)).map(function (match) { return match[1]; });
+            if (!sequence || !player || coordinates.length < 2) return;
+            const morale = cleanText(line.match(/(\d{1,3}%)/)?.[1]);
+            const distanceText = line.match(/([\d.,]+)\s*campos?/i)?.[1] || '';
+            const distance = Number(distanceText.replace(/\./g, '').replace(',', '.'));
+            commands.push({
+                sequence: sequence,
+                player: player,
+                origin: coordinates[0],
+                target: coordinates[1],
+                morale: morale,
+                distance: Number.isFinite(distance) ? distance : null,
+            });
+        });
+        if (!commands.length) throw new Error('Nenhuma linha de jogador, origem e alvo foi reconhecida no TXT.');
+        return {
+            version: OP_STORAGE_VERSION,
+            world: worldId(),
+            allyId: allyId(),
+            fileName: cleanText(fileName) || 'Operação importada',
+            importedAt: Date.now(),
+            impactTimestamp: impactTimestamp,
+            impactLabel: cleanText(impactLine),
+            ramMinutesPerField: null,
+            commands: commands.sort(function (a, b) { return a.sequence - b.sequence; }),
+        };
+    }
+
+    function parseXmlNumber(text, selector, fallback) {
+        try {
+            const xml = new DOMParser().parseFromString(String(text || ''), 'application/xml');
+            if (xml.querySelector('parsererror')) return fallback;
+            const value = Number.parseFloat(xml.querySelector(selector)?.textContent || '');
+            return Number.isFinite(value) && value > 0 ? value : fallback;
+        } catch (_error) {
+            return fallback;
+        }
+    }
+
+    async function detectRamMinutesPerField() {
+        const responses = await Promise.all([
+            window.fetch('/interface.php?func=get_config', { credentials: 'same-origin', cache: 'no-store' }),
+            window.fetch('/interface.php?func=get_unit_info', { credentials: 'same-origin', cache: 'no-store' }),
+        ]);
+        if (!responses[0].ok || !responses[1].ok) throw new Error('Não foi possível detectar a velocidade do mundo.');
+        const texts = await Promise.all(responses.map(function (response) { return response.text(); }));
+        const worldSpeed = parseXmlNumber(texts[0], 'config > speed, speed', 1);
+        const unitSpeed = parseXmlNumber(texts[0], 'config > unit_speed, unit_speed', 1);
+        const ramBaseMinutes = parseXmlNumber(texts[1], 'ram > speed', 30);
+        return ramBaseMinutes / (worldSpeed * unitSpeed);
+    }
+
+    async function ensureOperationSpeed(plan) {
+        if (Number(plan.ramMinutesPerField) > 0) return plan.ramMinutesPerField;
+        try {
+            plan.ramMinutesPerField = await detectRamMinutesPerField();
+        } catch (_error) {
+            plan.ramMinutesPerField = 30;
+            operationState.message = 'Não foi possível detectar a velocidade; usando 30 min/campo. Confira e ajuste o campo antes de considerar um prazo perdido.';
+            operationState.error = true;
+        }
+        saveOperationPlan(plan);
+        return plan.ramMinutesPerField;
+    }
+
     function automationStorageKey() {
         return ['cts', 'coleta-automatica', worldId(), allyId()].join(':');
     }
@@ -240,6 +385,12 @@
             arrival: command.arrival,
             arrivalTimestamp: command.arrivalTimestamp,
             countdown: command.countdown,
+            detailUrl: command.detailUrl || '',
+            detailStatus: command.detailStatus || '',
+            detailError: command.detailError || '',
+            origin: command.origin || '',
+            target: command.target || command.villageCoordinate || '',
+            departure: command.departure || '',
             villageId: command.villageId,
             villageName: command.villageName,
             villageCoordinate: command.villageCoordinate,
@@ -266,6 +417,9 @@
             tribeTag: existing.tribeTag || '',
             capturedAt: Date.now(),
             villageCount: state.villages.length,
+            villages: state.villages.map(function (village) {
+                return { id: village.id, name: village.name, coordinate: village.coordinate, url: village.url };
+            }),
             commands: state.commands.map(serializableCommand),
         };
         return saveDashboard(dashboard);
@@ -656,6 +810,60 @@
         return troops;
     }
 
+    function extractCoordinates(value) {
+        return Array.from(new Set(String(value || '').match(/\b\d{1,3}\|\d{1,3}\b/g) || []));
+    }
+
+    function readLabeledValue(root, labels) {
+        const wanted = labels.map(normalize);
+        for (const row of Array.from(root.querySelectorAll('tr'))) {
+            const cells = Array.from(row.cells || []);
+            if (cells.length < 2) continue;
+            const label = normalize(cells[0].textContent).replace(/:$/, '');
+            if (wanted.some(function (entry) { return label === entry || label.startsWith(entry + ' '); })) {
+                return cleanText(cells.slice(1).map(function (cell) { return cell.textContent; }).join(' '));
+            }
+        }
+        return '';
+    }
+
+    function readLabeledCoordinate(root, labels) {
+        return extractCoordinates(readLabeledValue(root, labels))[0] || '';
+    }
+
+    function detailVillages(root) {
+        const origin = readLabeledCoordinate(root, ['Origem', 'Aldeia de origem', 'Partida', 'Source']);
+        const target = readLabeledCoordinate(root, ['Destino', 'Aldeia alvo', 'Target']);
+        const linked = [];
+        root.querySelectorAll('a[href*="screen=info_village"]').forEach(function (anchor) {
+            extractCoordinates(anchor.textContent).forEach(function (coordinate) {
+                if (!linked.includes(coordinate)) linked.push(coordinate);
+            });
+        });
+        return { origin: origin || linked[0] || '', target: target || linked[1] || '' };
+    }
+
+    async function enrichAttackDetail(command) {
+        if (!command.detailUrl) {
+            command.detailStatus = 'unavailable';
+            return command;
+        }
+        try {
+            const detail = await fetchDocument(command.detailUrl);
+            const villages = detailVillages(detail);
+            command.origin = command.origin || villages.origin;
+            command.target = command.target || villages.target || command.villageCoordinate;
+            command.departure = readLabeledValue(detail, ['Partida', 'Enviado', 'Departure']) || command.departure || '';
+            command.arrival = readLabeledValue(detail, ['Chegada', 'Arrival']) || command.arrival;
+            command.detailStatus = command.origin ? 'available' : 'unavailable';
+        } catch (error) {
+            command.detailStatus = 'error';
+            command.detailError = error.message || 'Falha ao consultar detalhes';
+            if (error.code === 'BOT_PROTECTION') throw error;
+        }
+        return command;
+    }
+
     function parseEpoch(value) {
         const number = Number(value);
         if (!Number.isFinite(number) || number <= 0) return null;
@@ -789,6 +997,10 @@
                     arrival: arrival.label,
                     arrivalTimestamp: arrival.timestamp,
                     countdown: arrival.countdown,
+                    origin: '',
+                    target: village.coordinate,
+                    departure: '',
+                    detailStatus: '',
                     villageId: village.id,
                     villageName: village.name,
                     villageCoordinate: village.coordinate,
@@ -991,8 +1203,25 @@
             #${CENTRAL_ID} .ctc-coverage{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:7px;padding:11px}
             #${CENTRAL_ID} .ctc-member{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;border:1px solid #33445f;border-radius:8px;background:#111a2a}
             #${CENTRAL_ID} .ctc-member small{display:block;color:var(--muted);margin-top:3px}
-            @media(max-width:920px){#${CENTRAL_ID} .ctc-stats{grid-template-columns:repeat(2,1fr)}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr 1fr}#${CENTRAL_ID} .ctc-force{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-config{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-config-actions{flex-direction:row}#${CENTRAL_ID} .ctc-head-actions .ctc-btn{display:none}}
-            @media(max-width:560px){#${CENTRAL_ID}-overlay{padding:0}#${CENTRAL_ID}{width:100vw;height:100vh;border-radius:0}#${CENTRAL_ID} .ctc-body,#${CENTRAL_ID} .ctc-head{padding-left:11px;padding-right:11px}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr}#${SCRIPT_ID} .cts-head-actions .cts-btn{display:none}}
+            #${CENTRAL_ID} .ctc-main-tabs{display:flex;gap:7px;margin-bottom:12px;padding:5px;border:1px solid var(--line);border-radius:11px;background:#0b1321}
+            #${CENTRAL_ID} .ctc-main-tabs button{flex:1;height:39px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--muted);font-weight:800;cursor:pointer}
+            #${CENTRAL_ID} .ctc-main-tabs button.active{border-color:#257c73;background:#105e57;color:#fff}
+            #${CENTRAL_ID} .ctc-op-import{display:grid;grid-template-columns:minmax(280px,1fr) auto auto;gap:9px;align-items:end;margin-bottom:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,#17243a,#111a2a)}
+            #${CENTRAL_ID} .ctc-op-import label{display:grid;gap:5px;color:#fff;font-weight:800}
+            #${CENTRAL_ID} .ctc-op-import input[type=file],#${CENTRAL_ID} .ctc-op-import input[type=number]{width:100%;min-height:36px;border:1px solid #3b4e69;border-radius:8px;background:#0d1626;color:#edf2fa;padding:7px 9px}
+            #${CENTRAL_ID} .ctc-op-grid{display:grid;grid-template-columns:repeat(6,minmax(115px,1fr));gap:8px;margin-bottom:12px}
+            #${CENTRAL_ID} .ctc-op-stat{padding:11px;border:1px solid var(--line);border-radius:10px;background:#111a2a}
+            #${CENTRAL_ID} .ctc-op-stat strong{display:block;font-size:20px;color:#fff}#${CENTRAL_ID} .ctc-op-stat span{color:var(--muted);font-size:10px}
+            #${CENTRAL_ID} .ctc-op-player-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:7px;padding:10px}
+            #${CENTRAL_ID} .ctc-op-player{padding:9px;border:1px solid #33445f;border-radius:8px;background:#111a2a}
+            #${CENTRAL_ID} .ctc-op-player strong{display:block;color:#fff}#${CENTRAL_ID} .ctc-op-player span{display:block;margin-top:4px;color:var(--muted);font-size:10px}
+            #${CENTRAL_ID} .ctc-op-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) minmax(180px,.55fr) auto;gap:8px;margin-bottom:12px}
+            #${CENTRAL_ID} .ctc-op-status{display:inline-flex;align-items:center;padding:4px 7px;border-radius:99px;font-weight:800;font-size:10px}
+            #${CENTRAL_ID} .ctc-op-ok{background:#174b3d;color:#79f3cf}#${CENTRAL_ID} .ctc-op-detected{background:#38446a;color:#c8d7ff}#${CENTRAL_ID} .ctc-op-pending{background:#554317;color:#ffe29a}#${CENTRAL_ID} .ctc-op-late{background:#5d2027;color:#ffb0b8}#${CENTRAL_ID} .ctc-op-review{background:#57351c;color:#ffc48c}
+            #${CENTRAL_ID} .ctc-op-row-late{background:rgba(240,82,82,.08)}
+            #${CENTRAL_ID} .ctc-op-row-pending{background:rgba(238,183,64,.06)}
+            @media(max-width:920px){#${CENTRAL_ID} .ctc-stats{grid-template-columns:repeat(2,1fr)}#${CENTRAL_ID} .ctc-toolbar{grid-template-columns:1fr 1fr}#${CENTRAL_ID} .ctc-force{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-config{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-config-actions{flex-direction:row}#${CENTRAL_ID} .ctc-head-actions .ctc-btn{display:none}#${CENTRAL_ID} .ctc-op-grid{grid-template-columns:repeat(3,1fr)}#${CENTRAL_ID} .ctc-op-import{grid-template-columns:1fr 180px}#${CENTRAL_ID} .ctc-op-import>div{grid-column:1/-1}#${CENTRAL_ID} .ctc-op-toolbar{grid-template-columns:1fr 180px}}
+            @media(max-width:560px){#${CENTRAL_ID}-overlay{padding:0}#${CENTRAL_ID}{width:100vw;height:100vh;border-radius:0}#${CENTRAL_ID} .ctc-body,#${CENTRAL_ID} .ctc-head{padding-left:11px;padding-right:11px}#${CENTRAL_ID} .ctc-toolbar,#${CENTRAL_ID} .ctc-op-import,#${CENTRAL_ID} .ctc-op-toolbar{grid-template-columns:1fr}#${CENTRAL_ID} .ctc-op-grid{grid-template-columns:repeat(2,1fr)}#${SCRIPT_ID} .cts-head-actions .cts-btn{display:none}}
         `;
         document.head.appendChild(style);
     }
@@ -1530,10 +1759,333 @@
         return TYPE_LABELS[command.type] + (command.noble ? ' + nobre' : '');
     }
 
+    function centralTabsHtml() {
+        return `<div class="ctc-main-tabs">
+            <button type="button" data-central-view="dashboard" class="${centralState.view === 'dashboard' ? 'active' : ''}">Central de ataques</button>
+            <button type="button" data-central-view="operation" class="${centralState.view === 'operation' ? 'active' : ''}">Conferência da OP</button>
+        </div>`;
+    }
+
+    function commandArrivalTimestamp(command) {
+        return Number(command.arrivalTimestamp) || parseBrazilianTimestamp(command.arrival) || null;
+    }
+
+    function commandMatchesOperation(command, expected, impactTimestamp, requireArrival) {
+        const target = command.target || command.villageCoordinate || '';
+        if (normalize(command.player) !== normalize(expected.player) || target !== expected.target) return false;
+        const arrival = commandArrivalTimestamp(command);
+        if (!requireArrival || !arrival) return true;
+        return Math.abs(arrival - impactTimestamp) <= OP_ARRIVAL_TOLERANCE_MS;
+    }
+
+    function targetCoverage(dashboard, target) {
+        const snapshots = Object.values(dashboard.snapshots).filter(function (snapshot) {
+            const villages = Array.isArray(snapshot.villages) ? snapshot.villages : [];
+            if (villages.some(function (village) { return village.coordinate === target; })) return true;
+            return (snapshot.commands || []).some(function (command) {
+                return (command.target || command.villageCoordinate) === target;
+            });
+        }).sort(function (a, b) { return Number(b.capturedAt || 0) - Number(a.capturedAt || 0); });
+        return snapshots[0] || null;
+    }
+
+    function operationDeadline(expected, plan) {
+        const minutes = Number(plan.ramMinutesPerField);
+        if (!plan.impactTimestamp || !Number.isFinite(expected.distance) || !(minutes > 0)) return null;
+        return plan.impactTimestamp - expected.distance * minutes * 60 * 1000;
+    }
+
+    function evaluateOperation(plan, dashboard) {
+        const actual = dashboardCommands(dashboard);
+        const used = new Set();
+        const rows = plan.commands.map(function (expected) {
+            return {
+                expected: expected,
+                deadline: operationDeadline(expected, plan),
+                coverage: targetCoverage(dashboard, expected.target),
+                actual: null,
+                status: '',
+            };
+        });
+
+        function candidates(row, mode) {
+            return actual.map(function (command, index) { return { command: command, index: index }; }).filter(function (entry) {
+                if (used.has(entry.index) || !commandMatchesOperation(entry.command, row.expected, plan.impactTimestamp, mode !== 'wrong-time')) return false;
+                const origin = entry.command.origin || '';
+                if (mode === 'exact') return origin && origin === row.expected.origin;
+                if (mode === 'unknown') return !origin;
+                if (mode === 'different') return origin && origin !== row.expected.origin;
+                if (mode === 'wrong-time') {
+                    const arrival = commandArrivalTimestamp(entry.command);
+                    return arrival && Math.abs(arrival - plan.impactTimestamp) > OP_ARRIVAL_TOLERANCE_MS;
+                }
+                return false;
+            }).sort(function (a, b) {
+                const aArrival = commandArrivalTimestamp(a.command) || Number.MAX_SAFE_INTEGER;
+                const bArrival = commandArrivalTimestamp(b.command) || Number.MAX_SAFE_INTEGER;
+                return Math.abs(aArrival - plan.impactTimestamp) - Math.abs(bArrival - plan.impactTimestamp);
+            });
+        }
+
+        ['exact', 'unknown', 'different'].forEach(function (mode) {
+            rows.forEach(function (row) {
+                if (row.actual) return;
+                const match = candidates(row, mode)[0];
+                if (!match) return;
+                used.add(match.index);
+                row.actual = match.command;
+                row.status = mode;
+            });
+        });
+
+        rows.forEach(function (row) {
+            if (row.actual) return;
+            const wrongTime = candidates(row, 'wrong-time')[0];
+            if (wrongTime) {
+                used.add(wrongTime.index);
+                row.actual = wrongTime.command;
+                row.status = 'wrong-time';
+                return;
+            }
+            const deadlinePassed = row.deadline && Date.now() > row.deadline;
+            if (!row.coverage) row.status = 'unverified';
+            else if (deadlinePassed && Number(row.coverage.capturedAt || 0) < row.deadline) row.status = 'rescan';
+            else if (deadlinePassed) row.status = 'late';
+            else row.status = 'pending';
+        });
+        return rows;
+    }
+
+    function operationStatusInfo(status) {
+        const values = {
+            exact: ['Confirmado', 'ctc-op-ok'],
+            unknown: ['Detectado · origem não visível', 'ctc-op-detected'],
+            different: ['Enviado de outra origem', 'ctc-op-review'],
+            'wrong-time': ['Horário divergente', 'ctc-op-review'],
+            pending: ['Ainda pode sair', 'ctc-op-pending'],
+            late: ['Prazo de saída passou', 'ctc-op-late'],
+            rescan: ['Reconsultar o alvo', 'ctc-op-review'],
+            unverified: ['Alvo ainda não consultado', 'ctc-op-review'],
+        };
+        return values[status] || [status, 'ctc-op-review'];
+    }
+
+    function operationStatusGroup(status) {
+        if (['exact', 'unknown'].includes(status)) return 'sent';
+        if (status === 'pending') return 'pending';
+        if (status === 'late') return 'late';
+        return 'review';
+    }
+
+    function operationPlayerSummary(rows) {
+        const grouped = new Map();
+        rows.forEach(function (row) {
+            const key = normalize(row.expected.player);
+            if (!grouped.has(key)) grouped.set(key, { name: row.expected.player, total: 0, sent: 0, late: 0, pending: 0, review: 0 });
+            const item = grouped.get(key);
+            item.total += 1;
+            item[operationStatusGroup(row.status)] += 1;
+        });
+        return Array.from(grouped.values()).sort(function (a, b) {
+            return b.late - a.late || b.review - a.review || a.name.localeCompare(b.name, 'pt-BR');
+        });
+    }
+
+    function operationRowsHtml(rows) {
+        return rows.map(function (row) {
+            const info = operationStatusInfo(row.status);
+            const actualOrigin = row.actual?.origin || (row.actual ? 'Não compartilhada' : '—');
+            const actualArrival = row.actual ? (row.actual.arrival || formatOperationTimestamp(commandArrivalTimestamp(row.actual))) : '—';
+            const collected = row.coverage?.capturedAt ? formatOperationTimestamp(row.coverage.capturedAt) : '—';
+            const rowClass = row.status === 'late' ? 'ctc-op-row-late' : row.status === 'pending' ? 'ctc-op-row-pending' : '';
+            return `<tr class="${rowClass}">
+                <td><span class="ctc-op-status ${info[1]}">${escapeHtml(info[0])}</span></td>
+                <td>${formatNumber(row.expected.sequence)}</td>
+                <td><strong>${escapeHtml(row.expected.player)}</strong></td>
+                <td>${escapeHtml(row.expected.origin)}</td>
+                <td><strong>${escapeHtml(row.expected.target)}</strong></td>
+                <td>${escapeHtml(formatOperationTimestamp(row.deadline))}</td>
+                <td>${escapeHtml(actualOrigin)}</td>
+                <td>${escapeHtml(actualArrival)}</td>
+                <td>${escapeHtml(collected)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderOperationDashboard(root, dashboard) {
+        const plan = loadOperationPlan();
+        if (!plan.commands.length) {
+            root.querySelector('.ctc-body').innerHTML = centralTabsHtml() + `
+                <section class="ctc-op-import">
+                    <label>Arquivo TXT gerado pelo Montador de Fulls<input type="file" accept=".txt,text/plain" data-op-file></label>
+                </section>
+                <div class="ctc-notice">Importe o planejamento completo da operação. O painel cruzará jogador, origem, alvo e horário com os comandos compartilhados coletados nos perfis inimigos.</div>
+                <div class="ctc-empty">Nenhuma operação importada neste mundo.</div>`;
+            bindOperationDashboard(root);
+            return;
+        }
+
+        const evaluations = evaluateOperation(plan, dashboard);
+        const players = operationPlayerSummary(evaluations);
+        const totals = { sent: 0, pending: 0, late: 0, review: 0 };
+        evaluations.forEach(function (row) { totals[operationStatusGroup(row.status)] += 1; });
+        const query = normalize(operationState.search);
+        const visible = evaluations.filter(function (row) {
+            const group = operationStatusGroup(row.status);
+            if (operationState.status !== 'all' && operationState.status !== group) return false;
+            if (!query) return true;
+            return normalize([row.expected.player, row.expected.origin, row.expected.target, operationStatusInfo(row.status)[0]].join(' ')).includes(query);
+        });
+        const playerCards = players.map(function (player) {
+            return `<div class="ctc-op-player"><strong>${escapeHtml(player.name)}</strong><span>${formatNumber(player.sent)} confirmado(s) · ${formatNumber(player.pending)} pendente(s) · ${formatNumber(player.late)} prazo perdido · ${formatNumber(player.review)} revisar</span><span>Total esperado: ${formatNumber(player.total)}</span></div>`;
+        }).join('');
+        root.querySelector('.ctc-body').innerHTML = centralTabsHtml() + `
+            <section class="ctc-op-import">
+                <label>Substituir TXT da operação<input type="file" accept=".txt,text/plain" data-op-file></label>
+                <label>Velocidade do aríete<input type="number" min="0.01" step="0.01" value="${escapeHtml(plan.ramMinutesPerField || 30)}" data-op-speed></label>
+                <div><button class="ctc-btn primary" data-central-action="op-enrich"${operationState.busy ? ' disabled' : ''}>${operationState.busy ? 'Conferindo…' : 'Conferir origens'}</button> <button class="ctc-btn" data-central-action="op-clear"${operationState.busy ? ' disabled' : ''}>Remover OP</button></div>
+            </section>
+            <div class="ctc-notice${operationState.error ? ' error' : ''}">${escapeHtml(operationState.message || `${plan.fileName} · impacto ${formatOperationTimestamp(plan.impactTimestamp)} · ${formatNumber(plan.commands.length)} comando(s) esperados. A tolerância do horário de chegada é de 5 minutos.`)}</div>
+            <div class="ctc-op-grid">
+                <div class="ctc-op-stat"><strong>${formatNumber(plan.commands.length)}</strong><span>Comandos esperados</span></div>
+                <div class="ctc-op-stat"><strong>${formatNumber(totals.sent)}</strong><span>Enviados/detectados</span></div>
+                <div class="ctc-op-stat"><strong>${formatNumber(totals.pending)}</strong><span>Ainda podem sair</span></div>
+                <div class="ctc-op-stat"><strong>${formatNumber(totals.late)}</strong><span>Prazo perdido</span></div>
+                <div class="ctc-op-stat"><strong>${formatNumber(totals.review)}</strong><span>Precisam revisão</span></div>
+                <div class="ctc-op-stat"><strong>${formatNumber(players.length)}</strong><span>Jogadores da OP</span></div>
+            </div>
+            <section class="ctc-section">
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Conferência por jogador</div><div class="ctc-section-note">Enviados, pendentes, prazo perdido e alvos que ainda precisam ser consultados</div></div></div>
+                <div class="ctc-op-player-grid">${playerCards}</div>
+            </section>
+            <div class="ctc-op-toolbar">
+                <input class="ctc-input" data-op-search type="search" value="${escapeHtml(operationState.search)}" placeholder="Buscar jogador, origem, alvo ou status…">
+                <select class="ctc-select" data-op-status>
+                    <option value="all"${operationState.status === 'all' ? ' selected' : ''}>Todos os status</option>
+                    <option value="sent"${operationState.status === 'sent' ? ' selected' : ''}>Enviados/detectados</option>
+                    <option value="pending"${operationState.status === 'pending' ? ' selected' : ''}>Ainda podem sair</option>
+                    <option value="late"${operationState.status === 'late' ? ' selected' : ''}>Prazo perdido</option>
+                    <option value="review"${operationState.status === 'review' ? ' selected' : ''}>Precisam revisão</option>
+                </select>
+                <button class="ctc-btn" data-central-action="op-export">Exportar conferência</button>
+            </div>
+            <section class="ctc-section">
+                <div class="ctc-section-head"><div><div class="ctc-section-title">Comandos da operação</div><div class="ctc-section-note">“Prazo de saída passou” só aparece quando o perfil do alvo foi consultado depois do limite e o comando não foi encontrado.</div></div><span>${formatNumber(visible.length)} de ${formatNumber(evaluations.length)}</span></div>
+                <div class="ctc-scroll" style="max-height:430px"><table><thead><tr><th>Status</th><th>#</th><th>Jogador</th><th>Origem prevista</th><th>Alvo</th><th>Saída limite</th><th>Origem encontrada</th><th>Chegada encontrada</th><th>Alvo consultado em</th></tr></thead><tbody>${operationRowsHtml(visible)}</tbody></table></div>
+            </section>`;
+        bindOperationDashboard(root);
+    }
+
+    function bindOperationDashboard(root) {
+        const fileInput = root.querySelector('[data-op-file]');
+        if (fileInput) fileInput.addEventListener('change', async function (event) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+                operationState.message = 'Lendo o arquivo da operação…';
+                operationState.error = false;
+                const plan = parseOperationPlan(await file.text(), file.name);
+                await ensureOperationSpeed(plan);
+                saveOperationPlan(plan);
+                operationState.message = `${formatNumber(plan.commands.length)} comando(s) importado(s) de ${file.name}.`;
+                operationState.error = false;
+            } catch (error) {
+                operationState.message = error.message || 'Não foi possível importar a operação.';
+                operationState.error = true;
+            }
+            renderDashboard();
+        });
+        root.querySelector('[data-op-speed]')?.addEventListener('change', function (event) {
+            const plan = loadOperationPlan();
+            plan.ramMinutesPerField = Math.max(0.01, Number(event.target.value) || 30);
+            saveOperationPlan(plan);
+            operationState.message = `Velocidade ajustada para ${plan.ramMinutesPerField.toLocaleString('pt-BR')} min/campo.`;
+            operationState.error = false;
+            renderDashboard();
+        });
+        root.querySelector('[data-op-search]')?.addEventListener('input', function (event) {
+            operationState.search = event.target.value;
+            renderDashboard();
+            const replacement = document.querySelector('#' + CENTRAL_ID + ' [data-op-search]');
+            replacement?.focus();
+            replacement?.setSelectionRange(replacement.value.length, replacement.value.length);
+        });
+        root.querySelector('[data-op-status]')?.addEventListener('change', function (event) {
+            operationState.status = event.target.value;
+            renderDashboard();
+        });
+    }
+
+    async function enrichOperationDetails() {
+        if (operationState.busy) return;
+        const plan = loadOperationPlan();
+        const dashboard = loadDashboard();
+        const expectedKeys = new Set(plan.commands.map(function (item) { return normalize(item.player) + '\u0000' + item.target; }));
+        const pending = [];
+        Object.values(dashboard.snapshots).forEach(function (snapshot) {
+            (snapshot.commands || []).forEach(function (command) {
+                const key = normalize(command.player) + '\u0000' + (command.target || command.villageCoordinate || '');
+                if (command.kind === 'attack' && expectedKeys.has(key) && command.detailUrl && !command.origin) pending.push(command);
+            });
+        });
+        if (!pending.length) {
+            operationState.message = 'Não há detalhes pendentes. Origens não visíveis dependem do compartilhamento permitido pelo jogo.';
+            operationState.error = false;
+            renderDashboard();
+            return;
+        }
+        operationState.busy = true;
+        operationState.error = false;
+        let completed = 0;
+        try {
+            for (const command of pending) {
+                operationState.message = `Conferindo origem ${formatNumber(completed + 1)} de ${formatNumber(pending.length)}…`;
+                renderDashboard();
+                await enrichAttackDetail(command);
+                completed += 1;
+                saveDashboard(dashboard);
+                if (completed < pending.length) await requestPause();
+            }
+            operationState.message = `${formatNumber(completed)} detalhe(s) conferido(s).`;
+        } catch (error) {
+            operationState.message = error.message || 'A conferência de detalhes foi interrompida.';
+            operationState.error = true;
+        } finally {
+            operationState.busy = false;
+            saveDashboard(dashboard);
+            renderDashboard();
+        }
+    }
+
+    function exportOperationConference() {
+        const plan = loadOperationPlan();
+        if (!plan.commands.length) return;
+        const rows = [['Status', '#', 'Jogador', 'Origem prevista', 'Alvo', 'Saída limite', 'Impacto', 'Origem encontrada', 'Chegada encontrada', 'Perfil consultado em']]
+            .concat(evaluateOperation(plan, loadDashboard()).map(function (row) {
+                return [
+                    operationStatusInfo(row.status)[0], row.expected.sequence, row.expected.player, row.expected.origin, row.expected.target,
+                    formatOperationTimestamp(row.deadline), formatOperationTimestamp(plan.impactTimestamp), row.actual?.origin || '',
+                    row.actual?.arrival || formatOperationTimestamp(commandArrivalTimestamp(row.actual || {})),
+                    formatOperationTimestamp(row.coverage?.capturedAt),
+                ];
+            }));
+        const csv = '\uFEFF' + rows.map(function (row) { return row.map(csvCell).join(';'); }).join('\r\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'conferencia-op-' + worldId() + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+        link.click();
+        window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
+    }
+
     function renderDashboard() {
         const root = document.getElementById(CENTRAL_ID);
         if (!root) return;
         const dashboard = loadDashboard();
+        if (centralState.view === 'operation') {
+            renderOperationDashboard(root, dashboard);
+            return;
+        }
         const automation = loadAutomation();
         if (automation.active && automation.intervalSeconds) centralState.autoInterval = automation.intervalSeconds;
         const allCommands = dashboardCommands(dashboard);
@@ -1606,7 +2158,7 @@
             return `<div class="ctc-member"><div><a href="${escapeHtml(member.profileUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(member.playerName)}</strong></a><small>${escapeHtml(member.tribeTag || member.tribeName || 'Alvo avulso')}</small><small class="${snapshot ? (stale ? 'ctc-stale' : 'ctc-fresh') : ''}">${escapeHtml(label)}</small></div><span>${snapshot ? formatNumber((snapshot.commands || []).filter(function (command) { return command.kind === 'attack'; }).length) : '—'}</span></div>`;
         }).join('');
 
-        root.querySelector('.ctc-body').innerHTML = `
+        root.querySelector('.ctc-body').innerHTML = centralTabsHtml() + `
             <section class="ctc-config">
                 <div><label>Tribos inimigas monitoradas</label><textarea data-central-tribes placeholder="Informe tag, nome, ID ou link da tribo — uma por linha">${escapeHtml(centralState.tribeInput)}</textarea></div>
                 <div class="ctc-config-actions">
@@ -1711,11 +2263,26 @@
             </section>`;
         document.body.appendChild(overlay);
         overlay.addEventListener('click', function (event) {
-            const button = event.target.closest('[data-central-action]');
+            const button = event.target.closest('[data-central-action],[data-central-view]');
             if (!button) return;
+            if (button.dataset.centralView) {
+                centralState.view = button.dataset.centralView;
+                renderDashboard();
+                return;
+            }
             if (button.dataset.centralAction === 'close') overlay.remove();
             if (button.dataset.centralAction === 'refresh') renderDashboard();
             if (button.dataset.centralAction === 'export') exportDashboardCsv();
+            if (button.dataset.centralAction === 'op-export') exportOperationConference();
+            if (button.dataset.centralAction === 'op-enrich') enrichOperationDetails();
+            if (button.dataset.centralAction === 'op-clear') {
+                if (window.confirm('Remover o TXT e a conferência desta operação? Os comandos coletados continuarão salvos.')) {
+                    window.localStorage.removeItem(operationStorageKey());
+                    operationState.message = '';
+                    operationState.error = false;
+                    renderDashboard();
+                }
+            }
             if (button.dataset.centralAction === 'track-tribes') trackEnemyTribes();
             if (button.dataset.centralAction === 'next-target') openNextEnemyProfile();
             if (button.dataset.centralAction === 'start-auto') startAutomaticCollection();
