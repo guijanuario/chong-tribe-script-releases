@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.3', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.4', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3976,9 +3976,32 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function recoverLatestHistorySnapshot() {
-            const latest = Array.from(state.historySnapshots.values())
-                .filter((payload) => payload?.version === 2 && Array.isArray(payload.results) && payload.results.length)
-                .sort((a, b) => new Date(b.savedAt || 0) - new Date(a.savedAt || 0))[0];
+            const currentMemberIds = new Set(state.members.map((member) => String(member.id)));
+            const compatibleSnapshots = [];
+            const world = String(window.game_data?.world || window.location.hostname);
+            const worldPrefix = `${HISTORY_SNAPSHOT_PREFIX}:${world}:`;
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (!key?.startsWith(worldPrefix) || key.endsWith(':index')) continue;
+                try {
+                    const payload = JSON.parse(window.localStorage.getItem(key) || 'null');
+                    const overlap = (payload?.results || []).reduce((total, result) => total + Number(currentMemberIds.has(String(result?.id || ''))), 0);
+                    if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length && overlap > 0) {
+                        compatibleSnapshots.push({ payload, overlap });
+                    }
+                } catch (_error) {
+                    // Uma versão incompatível de outra chave não impede a recuperação.
+                }
+            }
+            const latest = [
+                ...Array.from(state.historySnapshots.values()).map((payload) => ({
+                    payload,
+                    overlap: (payload?.results || []).reduce((total, result) => total + Number(currentMemberIds.has(String(result?.id || ''))), 0)
+                })),
+                ...compatibleSnapshots
+            ]
+                .filter((item) => item.payload?.version === 2 && Array.isArray(item.payload.results) && item.payload.results.length && item.overlap > 0)
+                .sort((a, b) => b.overlap - a.overlap || new Date(b.payload.savedAt || 0) - new Date(a.payload.savedAt || 0))[0]?.payload;
             if (!latest) return false;
             const recovered = JSON.parse(JSON.stringify(latest));
             const serialized = JSON.stringify(recovered);
@@ -6662,7 +6685,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }
         }
 
-        function findTroopStoragePayload() {
+        function troopPayloadOverlap(payload, expectedPlayerIds) {
+            if (!(expectedPlayerIds instanceof Set) || !expectedPlayerIds.size) return 0;
+            return (payload?.results || []).reduce((total, result) => total + Number(expectedPlayerIds.has(String(result?.id || ''))), 0);
+        }
+
+        function findTroopStoragePayload(expectedPlayerIds = null) {
             const preferred = window.localStorage.getItem(troopStorageKey());
             if (preferred) {
                 try {
@@ -6674,16 +6702,22 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }
             const world = String(window.game_data?.world || window.location.hostname);
             const currentSnapshotPrefix = `${troopSnapshotStoragePrefix()}:`;
+            const worldSnapshotPrefix = `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${world}:`;
             const snapshots = [];
             const worldCaches = [];
             for (let index = 0; index < window.localStorage.length; index += 1) {
                 const key = window.localStorage.key(index);
-                if (key?.startsWith(currentSnapshotPrefix) && !key.endsWith(':index')) {
+                if (key?.startsWith(worldSnapshotPrefix) && !key.endsWith(':index')) {
                     const raw = window.localStorage.getItem(key);
                     try {
                         const payload = JSON.parse(raw || 'null');
                         if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) {
-                            snapshots.push({ raw, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                            snapshots.push({
+                                raw,
+                                exact: key.startsWith(currentSnapshotPrefix),
+                                overlap: troopPayloadOverlap(payload, expectedPlayerIds),
+                                savedAt: Date.parse(payload.savedAt || 0) || 0
+                            });
                         }
                     } catch (_error) {
                         // Snapshot inválido é ignorado.
@@ -6695,22 +6729,28 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     try {
                         const payload = JSON.parse(raw || 'null');
                         if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) {
-                            worldCaches.push({ raw, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                            worldCaches.push({
+                                raw,
+                                overlap: troopPayloadOverlap(payload, expectedPlayerIds),
+                                savedAt: Date.parse(payload.savedAt || 0) || 0
+                            });
                         }
                     } catch (_error) {
                         // Cache inválido é ignorado.
                     }
                 }
             }
-            snapshots.sort((a, b) => b.savedAt - a.savedAt);
-            worldCaches.sort((a, b) => b.savedAt - a.savedAt);
-            return snapshots[0]?.raw || worldCaches[0]?.raw || null;
+            const eligibleSnapshots = snapshots.filter((item) => item.exact || item.overlap > 0);
+            eligibleSnapshots.sort((a, b) => Number(b.exact) - Number(a.exact) || b.overlap - a.overlap || b.savedAt - a.savedAt);
+            const eligibleCaches = worldCaches.filter((item) => !expectedPlayerIds?.size || item.overlap > 0);
+            eligibleCaches.sort((a, b) => b.overlap - a.overlap || b.savedAt - a.savedAt);
+            return eligibleSnapshots[0]?.raw || eligibleCaches[0]?.raw || null;
         }
 
-        function loadTroopIndex() {
+        function loadTroopIndex(expectedPlayerIds = null) {
             const index = new Map();
             try {
-                const raw = findTroopStoragePayload();
+                const raw = findTroopStoragePayload(expectedPlayerIds);
                 if (!raw) return { index, count: 0, savedAt: null };
                 const payload = JSON.parse(raw);
                 if (payload?.version !== 2 || !Array.isArray(payload.results)) return { index, count: 0, savedAt: null };
@@ -7838,7 +7878,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const continentStatus = state.selectedContinents.length ? ` em ${state.selectedContinents.join(', ')}` : ' em todos os continentes';
                 setStatus(`Calculando alcance entre ${formatNumber(eligibleAlliedVillages.length)} aldeias aliadas${continentStatus} e ${formatNumber(eligibleEnemyVillages.length)} inimigas válidas (${formatNumber(ignoredEnemyVillageCount)} aldeia(s) ignorada(s) por nick)...`);
                 await new Promise((resolve) => window.setTimeout(resolve, 0));
-                const troopData = loadTroopIndex();
+                const troopData = loadTroopIndex(new Set(eligibleAlliedVillages.map((village) => String(village.playerId || '')).filter(Boolean)));
                 state.troopDataInfo = { count: troopData.count, savedAt: troopData.savedAt };
                 if (!troopData.count) {
                     throw new Error('Não encontrei tropas salvas nem uma versão restaurável. Abra “Tropas da Tribo” e use “Carregar e validar origens” antes de analisar o Blind.');
@@ -8517,7 +8557,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return `${prefix}:${worldId()}:${allyId()}`;
         }
 
-        function findPayload(prefix) {
+        function troopPayloadOverlap(payload, expectedPlayerIds) {
+            if (!(expectedPlayerIds instanceof Set) || !expectedPlayerIds.size) return 0;
+            return (payload?.results || []).reduce((total, result) => total + Number(expectedPlayerIds.has(String(result?.id || ''))), 0);
+        }
+
+        function findPayload(prefix, expectedPlayerIds = null) {
             const exactKey = preferredKey(prefix);
             const currentAlly = allyId();
             const candidates = [];
@@ -8535,13 +8580,32 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                             || currentAlly === 'tribo-atual'
                             || (payloadAlly && payloadAlly === currentAlly);
                         const savedAt = Date.parse(payload?.savedAt || 0);
-                        candidates.push({ raw, key, allyMatch, savedAt: Number.isFinite(savedAt) ? savedAt : 0 });
+                        candidates.push({
+                            raw,
+                            key,
+                            allyMatch,
+                            overlap: prefix === TROOP_STORAGE_PREFIX ? troopPayloadOverlap(payload, expectedPlayerIds) : 0,
+                            savedAt: Number.isFinite(savedAt) ? savedAt : 0
+                        });
                     } catch (_error) {
                         // Payloads inválidos não podem ser usados no planejamento.
                     }
                 }
             }
-            if (!candidates.length) return prefix === TROOP_STORAGE_PREFIX ? findLatestTroopSnapshotPayload() : null;
+            if (prefix === TROOP_STORAGE_PREFIX && expectedPlayerIds?.size) {
+                const exactTroopCaches = candidates.filter((candidate) => candidate.key === exactKey);
+                if (exactTroopCaches.length) {
+                    exactTroopCaches.sort((a, b) => b.savedAt - a.savedAt);
+                    return exactTroopCaches[0].raw;
+                }
+                const matchingTribe = candidates.filter((candidate) => candidate.overlap > 0);
+                if (matchingTribe.length) {
+                    matchingTribe.sort((a, b) => b.overlap - a.overlap || b.savedAt - a.savedAt);
+                    return matchingTribe[0].raw;
+                }
+                return findLatestTroopSnapshotPayload(expectedPlayerIds);
+            }
+            if (!candidates.length) return prefix === TROOP_STORAGE_PREFIX ? findLatestTroopSnapshotPayload(expectedPlayerIds) : null;
             const matching = candidates.filter((candidate) => candidate.allyMatch);
             const eligible = matching.length ? matching : candidates;
             eligible.sort((a, b) => b.savedAt - a.savedAt
@@ -8549,8 +8613,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return eligible[0].raw;
         }
 
-        function findLatestTroopSnapshotPayload() {
-            const snapshotPrefix = `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${worldId()}:${allyId()}:`;
+        function findLatestTroopSnapshotPayload(expectedPlayerIds = null) {
+            const snapshotPrefix = `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${worldId()}:`;
+            const exactSnapshotPrefix = `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${worldId()}:${allyId()}:`;
             const candidates = [];
             for (let index = 0; index < window.localStorage.length; index += 1) {
                 const key = window.localStorage.key(index);
@@ -8559,12 +8624,15 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 try {
                     const payload = JSON.parse(raw || 'null');
                     if (payload?.version !== 2 || !Array.isArray(payload.results) || !payload.results.length) continue;
-                    candidates.push({ raw, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                    const overlap = troopPayloadOverlap(payload, expectedPlayerIds);
+                    const exact = key.startsWith(exactSnapshotPrefix);
+                    if (expectedPlayerIds?.size && !exact && overlap <= 0) continue;
+                    candidates.push({ raw, exact, overlap, savedAt: Date.parse(payload.savedAt || 0) || 0 });
                 } catch (_error) {
                     // Snapshot inválido não pode alimentar o planejamento.
                 }
             }
-            candidates.sort((a, b) => b.savedAt - a.savedAt);
+            candidates.sort((a, b) => b.overlap - a.overlap || Number(b.exact) - Number(a.exact) || b.savedAt - a.savedAt);
             return candidates[0]?.raw || null;
         }
 
@@ -8872,17 +8940,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function loadData(blindSnapshotId = '') {
-            const troopRaw = findPayload(TROOP_STORAGE_PREFIX);
             state.troopPayload = null;
             state.blindPayload = null;
             state.auditResults = loadAuditResults();
-
-            try {
-                const parsed = JSON.parse(troopRaw || 'null');
-                if (parsed?.version === 2 && Array.isArray(parsed.results)) state.troopPayload = parsed;
-            } catch (error) {
-                console.warn('[Chong Tribe Script] Storage de tropas inválido:', error);
-            }
 
             state.blindPayloadOptions = collectBlindPayloadOptions();
             const selected = state.blindPayloadOptions.find((option) => option.id === blindSnapshotId)
@@ -8890,6 +8950,17 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 || null;
             state.selectedBlindSnapshotId = selected?.id || '';
             state.blindPayload = selected?.payload || null;
+            const expectedPlayerIds = new Set([
+                ...(state.blindPayload?.needs || []),
+                ...(state.blindPayload?.villages || [])
+            ].map((item) => String(item?.playerId || '')).filter(Boolean));
+            const troopRaw = findPayload(TROOP_STORAGE_PREFIX, expectedPlayerIds);
+            try {
+                const parsed = JSON.parse(troopRaw || 'null');
+                if (parsed?.version === 2 && Array.isArray(parsed.results)) state.troopPayload = parsed;
+            } catch (error) {
+                console.warn('[Chong Tribe Script] Storage de tropas inválido:', error);
+            }
             const selector = document.querySelector(`#${SCRIPT_ID} [name="blind_snapshot"]`);
             if (selector && state.selectedBlindSnapshotId) selector.value = state.selectedBlindSnapshotId;
         }
