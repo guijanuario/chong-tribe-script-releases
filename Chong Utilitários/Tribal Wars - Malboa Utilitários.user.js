@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.4', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.5', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3813,7 +3813,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }
         }
 
-        function removeOldestHistorySnapshot() {
+        function removeOldestHistorySnapshot(minimumRemaining = 0) {
+            if (state.historySnapshots.size <= minimumRemaining) return false;
             const oldest = Array.from(state.historySnapshots.entries())
                 .sort((a, b) => new Date(a[1]?.savedAt || 0) - new Date(b[1]?.savedAt || 0))[0];
             if (!oldest) return false;
@@ -3967,9 +3968,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     window.localStorage.setItem(getStorageKey(), serialized);
                     return true;
                 } catch (error) {
-                    // A coleta atual tem prioridade sobre versões históricas. Em tribos
-                    // grandes, uma única versão pode ocupar boa parte da cota do domínio.
-                    if (!removeOldestHistorySnapshot()) throw error;
+                    // A coleta atual tem prioridade sobre versões antigas, mas a última
+                    // versão restaurável nunca pode ser apagada antes de a chave principal
+                    // estar confirmada. Caso ainda não caiba, o snapshot permanece íntegro.
+                    if (!removeOldestHistorySnapshot(1)) throw error;
                 }
             }
             return false;
