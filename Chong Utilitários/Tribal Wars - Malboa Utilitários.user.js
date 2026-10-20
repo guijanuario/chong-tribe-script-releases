@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.1', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.2', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -6310,6 +6310,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         const RESULT_STORAGE_PREFIX = 'chonguera_blind_preventivo_result';
         const COORDINATE_RESULT_STORAGE_PREFIX = 'chonguera_blind_preventivo_coordinate_sets';
         const TROOP_STORAGE_PREFIX = 'chonguera_tropas_tribo_v2';
+        const TROOP_HISTORY_SNAPSHOT_PREFIX = 'chonguera_tropas_tribo_snapshots_v1';
         const IGNORED_ENEMY_STORAGE_PREFIX = 'chonguera_ignored_enemy_players';
         const DEFAULT_MIN_ENEMY_POINTS = 7000;
         const HOUR_LIMITS = [1, 2, 3, 4, 5, 6, 8];
@@ -6500,7 +6501,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const history = [payload, ...(Array.isArray(current) ? current : [])]
                     .filter((item, index, list) => item?.snapshotId
                         && list.findIndex((candidate) => candidate?.snapshotId === item.snapshotId) === index)
-                    .slice(0, 12);
+                    .slice(0, 4);
                 window.localStorage.setItem(key, JSON.stringify(history));
                 return true;
             } catch (error) {
@@ -6509,37 +6510,124 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }
         }
 
+        function isStorageQuotaError(error) {
+            return error?.name === 'QuotaExceededError'
+                || error?.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+                || Number(error?.code) === 22
+                || Number(error?.code) === 1014;
+        }
+
+        function pruneOldestCoordinateSnapshot() {
+            const key = coordinateResultStorageKey();
+            try {
+                const history = JSON.parse(window.localStorage.getItem(key) || '[]');
+                if (!Array.isArray(history) || !history.length) return false;
+                history.sort((a, b) => Date.parse(b?.savedAt || 0) - Date.parse(a?.savedAt || 0));
+                history.pop();
+                if (history.length) window.localStorage.setItem(key, JSON.stringify(history));
+                else window.localStorage.removeItem(key);
+                return true;
+            } catch (_error) {
+                window.localStorage.removeItem(key);
+                return true;
+            }
+        }
+
+        function troopSnapshotStoragePrefix() {
+            const world = String(window.game_data?.world || window.location.hostname);
+            const allyValue = window.game_data?.player?.ally;
+            const ally = ['string', 'number'].includes(typeof allyValue) && String(allyValue)
+                ? String(allyValue)
+                : 'tribo-atual';
+            return `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${world}:${ally}`;
+        }
+
+        function pruneOldestTroopSnapshot() {
+            const prefix = `${troopSnapshotStoragePrefix()}:`;
+            const indexKey = `${troopSnapshotStoragePrefix()}:index`;
+            const snapshots = [];
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (!key?.startsWith(prefix) || key === indexKey) continue;
+                try {
+                    const payload = JSON.parse(window.localStorage.getItem(key) || 'null');
+                    snapshots.push({ key, id: key.slice(prefix.length), savedAt: Date.parse(payload?.savedAt || 0) || 0 });
+                } catch (_error) {
+                    snapshots.push({ key, id: key.slice(prefix.length), savedAt: 0 });
+                }
+            }
+            // A versão mais recente continua disponível para recuperação; somente
+            // versões históricas antigas e recriáveis cedem espaço ao resultado atual.
+            if (snapshots.length <= 1) return false;
+            snapshots.sort((a, b) => a.savedAt - b.savedAt);
+            window.localStorage.removeItem(snapshots[0].key);
+            try {
+                const retainedIds = snapshots.slice(1).sort((a, b) => b.savedAt - a.savedAt).map((item) => item.id);
+                window.localStorage.setItem(indexKey, JSON.stringify(retainedIds));
+            } catch (_error) {
+                // A remoção do snapshot já liberou espaço; o coletor reconstrói o índice.
+            }
+            return true;
+        }
+
+        function persistDistributionPayload(key, payload) {
+            const serialized = JSON.stringify(payload);
+            let removedCoordinateSnapshots = 0;
+            let removedTroopSnapshots = 0;
+            for (let attempt = 0; attempt < 24; attempt += 1) {
+                try {
+                    window.localStorage.setItem(key, serialized);
+                    return { removedCoordinateSnapshots, removedTroopSnapshots };
+                } catch (error) {
+                    if (!isStorageQuotaError(error)) throw error;
+                    if (pruneOldestCoordinateSnapshot()) {
+                        removedCoordinateSnapshots += 1;
+                        continue;
+                    }
+                    if (pruneOldestTroopSnapshot()) {
+                        removedTroopSnapshots += 1;
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error('Não foi possível liberar espaço local suficiente para o resultado do Blind.');
+        }
+
+        function distributionVillage(risk, includeDefenseDetails) {
+            const village = {
+                name: risk.allied.name,
+                coordinate: risk.allied.coordinate,
+                x: Number(risk.allied.x),
+                y: Number(risk.allied.y),
+                playerId: String(risk.allied.playerId),
+                playerName: risk.allied.playerName,
+                alliedPoints: Number(risk.allied.points) || 0,
+                bucket: Number(risk.bucket),
+                minutes: Number(risk.minutes),
+                enemyCoordinate: risk.enemy.coordinate,
+                enemyPoints: Number(risk.enemy.points) || 0,
+                enemyPlayerName: risk.enemy.playerName,
+                enemyAllyTag: risk.enemyTribe?.tag || risk.enemyTribe?.name || '',
+                classification: risk.classification
+            };
+            if (!includeDefenseDetails) return village;
+            village.required = Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Number(risk.required?.[unit.id]) || 0]));
+            village.deficits = Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Number(risk.deficits?.[unit.id]) || 0]));
+            return village;
+        }
+
         function saveDistributionSnapshot() {
-            const allVillages = state.results.map((risk) => ({
-                    id: String(risk.allied.id),
-                    name: risk.allied.name,
-                    coordinate: risk.allied.coordinate,
-                    continent: villageContinent(risk.allied),
-                    x: Number(risk.allied.x),
-                    y: Number(risk.allied.y),
-                    playerId: String(risk.allied.playerId),
-                    playerName: risk.allied.playerName,
-                    alliedPoints: Number(risk.allied.points) || 0,
-                    allyId: String(risk.allied.allyId),
-                    allyTag: risk.alliedTribe?.tag || risk.alliedTribe?.name || '',
-                    bucket: Number(risk.bucket),
-                    hours: Number(risk.hours),
-                    minutes: Number(risk.minutes),
-                    enemyCoordinate: risk.enemy.coordinate,
-                    enemyPoints: Number(risk.enemy.points) || 0,
-                    enemyPlayerName: risk.enemy.playerName,
-                    enemyAllyTag: risk.enemyTribe?.tag || risk.enemyTribe?.name || '',
-                    classification: risk.classification,
-                    required: Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Number(risk.required?.[unit.id]) || 0])),
-                    actual: Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Number(risk.actual?.[unit.id]) || 0])),
-                    deficits: Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Number(risk.deficits?.[unit.id]) || 0]))
-                }));
-            const needs = allVillages.filter((village) => village.classification === 'needs');
+            const needs = state.results
+                .filter((risk) => risk.classification === 'needs')
+                .map((risk) => distributionVillage(risk, true));
             // O distribuidor usa a coleção auxiliar somente para revisar aldeias
             // já defendidas que entraram em alguma blacklist. Resultados "missing"
             // e "needs" não precisam ser duplicados aqui, o que reduz bastante o
             // uso do localStorage em análises grandes.
-            const villages = allVillages.filter((village) => village.classification === 'defended');
+            const villages = state.results
+                .filter((risk) => risk.classification === 'defended')
+                .map((risk) => distributionVillage(risk, false));
             const savedAt = new Date().toISOString();
             const key = resultStorageKey();
             const payload = {
@@ -6563,11 +6651,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             };
 
             try {
-                window.localStorage.setItem(key, JSON.stringify(payload));
+                const cleanup = persistDistributionPayload(key, payload);
                 const persisted = JSON.parse(window.localStorage.getItem(key) || 'null');
                 if (persisted?.savedAt !== savedAt) throw new Error('O navegador não confirmou a gravação do resultado.');
                 saveCoordinateSnapshot(payload);
-                return { saved: true, savedAt, needs: needs.length };
+                return { saved: true, savedAt, needs: needs.length, ...cleanup };
             } catch (error) {
                 console.warn('[Blind Preventivo] Não foi possível salvar o resultado para o distribuidor:', error);
                 return { saved: false, error };
