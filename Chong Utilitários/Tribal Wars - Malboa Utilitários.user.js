@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.0', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.1', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3784,9 +3784,14 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function loadHistorySnapshots() {
             state.historySnapshots.clear();
             try {
-                const ids = JSON.parse(window.localStorage.getItem(getSnapshotIndexKey()) || '[]');
-                if (!Array.isArray(ids)) return;
-                ids.slice(0, HISTORY_SNAPSHOT_LIMIT).forEach((snapshotId) => {
+                const indexed = JSON.parse(window.localStorage.getItem(getSnapshotIndexKey()) || '[]');
+                const ids = new Set(Array.isArray(indexed) ? indexed.map(String) : []);
+                const prefix = getSnapshotStoragePrefix() + ':';
+                for (let index = 0; index < window.localStorage.length; index += 1) {
+                    const key = window.localStorage.key(index);
+                    if (key?.startsWith(prefix) && key !== getSnapshotIndexKey()) ids.add(key.slice(prefix.length));
+                }
+                Array.from(ids).forEach((snapshotId) => {
                     try {
                         const payload = JSON.parse(window.localStorage.getItem(getSnapshotPayloadKey(snapshotId)) || 'null');
                         if (payload?.version === 2 && Array.isArray(payload.results)) {
@@ -3795,6 +3800,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     } catch (_error) {
                         window.localStorage.removeItem(getSnapshotPayloadKey(snapshotId));
                     }
+                });
+                const retained = Array.from(state.historySnapshots.entries())
+                    .sort((a, b) => new Date(b[1]?.savedAt || 0) - new Date(a[1]?.savedAt || 0));
+                retained.slice(HISTORY_SNAPSHOT_LIMIT).forEach(([snapshotId]) => {
+                    state.historySnapshots.delete(snapshotId);
+                    window.localStorage.removeItem(getSnapshotPayloadKey(snapshotId));
                 });
                 persistSnapshotIndex();
             } catch (error) {
@@ -3947,6 +3958,52 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 mergeUnitMetadata(result);
             });
             state.savedAt = payload.savedAt || null;
+            return payload.results.length > 0 && state.results.size > 0;
+        }
+
+        function persistPrimaryPayload(serialized) {
+            for (let attempt = 0; attempt <= HISTORY_SNAPSHOT_LIMIT; attempt += 1) {
+                try {
+                    window.localStorage.setItem(getStorageKey(), serialized);
+                    return true;
+                } catch (error) {
+                    // A coleta atual tem prioridade sobre versões históricas. Em tribos
+                    // grandes, uma única versão pode ocupar boa parte da cota do domínio.
+                    if (!removeOldestHistorySnapshot()) throw error;
+                }
+            }
+            return false;
+        }
+
+        function recoverLatestHistorySnapshot() {
+            const latest = Array.from(state.historySnapshots.values())
+                .filter((payload) => payload?.version === 2 && Array.isArray(payload.results) && payload.results.length)
+                .sort((a, b) => new Date(b.savedAt || 0) - new Date(a.savedAt || 0))[0];
+            if (!latest) return false;
+            const recovered = JSON.parse(JSON.stringify(latest));
+            const serialized = JSON.stringify(recovered);
+            let persisted = false;
+            try {
+                persisted = persistPrimaryPayload(serialized);
+            } catch (error) {
+                console.warn('[Tropas da Tribo] A versão histórica foi recuperada em memória, mas não coube na chave principal:', error);
+            }
+            if (!applyStoredPayload(recovered) || !state.results.size) return false;
+            appendHistoryEntry({
+                savedAt: new Date().toISOString(),
+                type: 'Recuperação automática do histórico',
+                requested: state.results.size,
+                processed: state.results.size,
+                failures: 0,
+                saved: persisted,
+                snapshotId: null
+            });
+            notify(
+                persisted
+                    ? 'As tropas foram recuperadas automaticamente da versão mais recente do histórico.'
+                    : 'As tropas foram recuperadas para esta tela, mas o navegador continua sem espaço para mantê-las.',
+                persisted ? 'success' : 'error'
+            );
             return true;
         }
 
@@ -3955,16 +4012,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const savedAt = new Date().toISOString();
                 const payload = createStoredPayload(savedAt);
                 const serialized = JSON.stringify(payload);
-                let saved = false;
-                for (let attempt = 0; attempt <= HISTORY_SNAPSHOT_LIMIT; attempt += 1) {
-                    try {
-                        window.localStorage.setItem(getStorageKey(), serialized);
-                        saved = true;
-                        break;
-                    } catch (error) {
-                        if (!removeOldestHistorySnapshot()) throw error;
-                    }
-                }
+                const saved = persistPrimaryPayload(serialized);
                 if (!saved) throw new Error('O armazenamento local permaneceu sem espaço após remover os snapshots antigos.');
                 state.savedAt = savedAt;
                 if (historyContext) {
@@ -3982,9 +4030,15 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function loadStoredData() {
             try {
                 const raw = readStoredPayload();
-                if (!raw) return;
+                if (!raw) {
+                    recoverLatestHistorySnapshot();
+                    return;
+                }
                 const payload = JSON.parse(raw);
-                if (!applyStoredPayload(payload)) return;
+                if (!applyStoredPayload(payload)) {
+                    recoverLatestHistorySnapshot();
+                    return;
+                }
                 if (!state.history.length && state.savedAt) {
                     const snapshotId = saveHistorySnapshot(payload);
                     appendHistoryEntry({
@@ -3999,6 +4053,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 }
             } catch (error) {
                 console.warn('[Tropas da Tribo] Dados salvos inválidos; o cache foi ignorado:', error);
+                recoverLatestHistorySnapshot();
             }
         }
 
