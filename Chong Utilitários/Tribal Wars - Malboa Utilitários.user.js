@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.7', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.8', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3884,12 +3884,15 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const preferred = getStorageKey();
             const world = String(window.game_data?.world || window.location.hostname);
             const worldPrefix = `${STORAGE_PREFIX}:${world}:`;
+            const snapshotPrefix = `${HISTORY_SNAPSHOT_PREFIX}:${world}:`;
             const currentMemberIds = new Set(state.members.map((member) => String(member.id)));
             const candidates = [];
             const keys = [preferred];
             for (let index = 0; index < window.localStorage.length; index += 1) {
                 const key = window.localStorage.key(index);
-                if (key?.startsWith(worldPrefix) && key !== preferred && !key.includes(':strategic-settings')) keys.push(key);
+                const isPrimary = key?.startsWith(worldPrefix) && !key.includes(':strategic-settings');
+                const isSnapshot = key?.startsWith(snapshotPrefix) && !key.endsWith(':index');
+                if ((isPrimary || isSnapshot) && key !== preferred) keys.push(key);
             }
             for (const key of keys) {
                 const raw = window.localStorage.getItem(key);
@@ -3899,26 +3902,49 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     if (payload?.version !== 2 || !Array.isArray(payload.results) || !payload.results.length) continue;
                     const overlap = payload.results.reduce((total, result) => total + Number(currentMemberIds.has(String(result?.id || ''))), 0);
                     if (key !== preferred && overlap <= 0) continue;
-                    candidates.push({ raw, key, overlap, savedAt: Date.parse(payload.savedAt || 0) || 0 });
+                    candidates.push({ raw, payload, key, overlap, savedAt: Date.parse(payload.savedAt || 0) || 0 });
                 } catch (_error) {
                     // Uma chave inválida não impede a leitura das demais.
                 }
             }
-            candidates.sort((a, b) => Number(b.key === preferred) - Number(a.key === preferred)
-                || b.overlap - a.overlap
-                || b.savedAt - a.savedAt);
-            const selected = candidates[0];
-            if (!selected) return null;
-            if (selected.key !== preferred) {
+            if (!candidates.length) return null;
+
+            // Uma atualização individual nunca deve esconder uma coleta maior. Mesclamos
+            // todas as versões compatíveis e mantemos, para cada membro, o registro mais novo.
+            const mergedResults = new Map();
+            const mergedUnits = [];
+            const mergedIcons = {};
+            candidates.sort((a, b) => a.savedAt - b.savedAt || Number(a.key === preferred) - Number(b.key === preferred));
+            candidates.forEach(({ payload }) => {
+                (payload.unitOrder || []).forEach((unit) => {
+                    if (unit && !mergedUnits.includes(unit)) mergedUnits.push(unit);
+                });
+                Object.assign(mergedIcons, payload.unitIcons || {});
+                (payload.results || []).forEach((result) => {
+                    const id = String(result?.id || '');
+                    if (id && currentMemberIds.has(id)) mergedResults.set(id, result);
+                });
+            });
+            const newest = candidates[candidates.length - 1];
+            const mergedPayload = {
+                version: 2,
+                savedAt: newest.payload.savedAt || new Date(newest.savedAt || Date.now()).toISOString(),
+                unitOrder: mergedUnits,
+                unitIcons: mergedIcons,
+                results: Array.from(mergedResults.values())
+            };
+            const mergedRaw = JSON.stringify(mergedPayload);
+            const preferredRaw = window.localStorage.getItem(preferred);
+            if (preferredRaw !== mergedRaw) {
                 try {
-                    window.localStorage.setItem(preferred, selected.raw);
+                    window.localStorage.setItem(preferred, mergedRaw);
                 } catch (error) {
-                    // A cópia é apenas uma migração. Os dados encontrados continuam
-                    // válidos e devem ser carregados mesmo quando a cota está cheia.
-                    console.warn('[Tropas da Tribo] Dados encontrados em uma chave anterior; não houve espaço para migrá-los:', error);
+                    // A consolidação é apenas uma migração. Os dados encontrados continuam
+                    // válidos e devem ser carregados em memória mesmo com a cota cheia.
+                    console.warn('[Tropas da Tribo] Dados consolidados de versões anteriores; não houve espaço para gravar a mesclagem:', error);
                 }
             }
-            return selected.raw;
+            return mergedRaw;
         }
 
         function createStoredPayload(savedAt = new Date().toISOString()) {
@@ -6730,16 +6756,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function findTroopStoragePayload(expectedPlayerIds = null) {
-            const preferred = window.localStorage.getItem(troopStorageKey());
-            if (preferred) {
-                try {
-                    const payload = JSON.parse(preferred);
-                    if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) return preferred;
-                } catch (_error) {
-                    // Tenta uma versão restaurável abaixo.
-                }
-            }
             const world = String(window.game_data?.world || window.location.hostname);
+            const preferredKey = troopStorageKey();
             const currentSnapshotPrefix = `${troopSnapshotStoragePrefix()}:`;
             const worldSnapshotPrefix = `${TROOP_HISTORY_SNAPSHOT_PREFIX}:${world}:`;
             const snapshots = [];
@@ -6755,6 +6773,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                                 raw,
                                 exact: key.startsWith(currentSnapshotPrefix),
                                 overlap: troopPayloadOverlap(payload, expectedPlayerIds),
+                                memberCount: payload.results.length,
                                 savedAt: Date.parse(payload.savedAt || 0) || 0
                             });
                         }
@@ -6770,7 +6789,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         if (payload?.version === 2 && Array.isArray(payload.results) && payload.results.length) {
                             worldCaches.push({
                                 raw,
+                                exact: key === preferredKey,
                                 overlap: troopPayloadOverlap(payload, expectedPlayerIds),
+                                memberCount: payload.results.length,
                                 savedAt: Date.parse(payload.savedAt || 0) || 0
                             });
                         }
@@ -6779,11 +6800,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     }
                 }
             }
-            const eligibleSnapshots = snapshots.filter((item) => item.exact || item.overlap > 0);
-            eligibleSnapshots.sort((a, b) => Number(b.exact) - Number(a.exact) || b.overlap - a.overlap || b.savedAt - a.savedAt);
-            const eligibleCaches = worldCaches.filter((item) => !expectedPlayerIds?.size || item.overlap > 0);
-            eligibleCaches.sort((a, b) => b.overlap - a.overlap || b.savedAt - a.savedAt);
-            return eligibleSnapshots[0]?.raw || eligibleCaches[0]?.raw || null;
+            const candidates = [...snapshots, ...worldCaches]
+                .filter((item) => !expectedPlayerIds?.size || item.overlap > 0);
+            candidates.sort((a, b) => expectedPlayerIds?.size
+                ? b.overlap - a.overlap || b.memberCount - a.memberCount || Number(b.exact) - Number(a.exact) || b.savedAt - a.savedAt
+                : b.memberCount - a.memberCount || Number(b.exact) - Number(a.exact) || b.savedAt - a.savedAt);
+            return candidates[0]?.raw || null;
         }
 
         function loadTroopIndex(expectedPlayerIds = null) {
@@ -8624,6 +8646,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                             key,
                             allyMatch,
                             overlap: prefix === TROOP_STORAGE_PREFIX ? troopPayloadOverlap(payload, expectedPlayerIds) : 0,
+                            memberCount: prefix === TROOP_STORAGE_PREFIX ? payload.results.length : 0,
                             savedAt: Number.isFinite(savedAt) ? savedAt : 0
                         });
                     } catch (_error) {
@@ -8632,17 +8655,36 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 }
             }
             if (prefix === TROOP_STORAGE_PREFIX && expectedPlayerIds?.size) {
-                const exactTroopCaches = candidates.filter((candidate) => candidate.key === exactKey);
-                if (exactTroopCaches.length) {
-                    exactTroopCaches.sort((a, b) => b.savedAt - a.savedAt);
-                    return exactTroopCaches[0].raw;
+                const snapshotRaw = findLatestTroopSnapshotPayload(expectedPlayerIds);
+                if (snapshotRaw) {
+                    try {
+                        const snapshotPayload = JSON.parse(snapshotRaw);
+                        candidates.push({
+                            raw: snapshotRaw,
+                            key: 'snapshot',
+                            allyMatch: true,
+                            overlap: troopPayloadOverlap(snapshotPayload, expectedPlayerIds),
+                            memberCount: snapshotPayload.results.length,
+                            savedAt: Date.parse(snapshotPayload?.savedAt || 0) || 0
+                        });
+                    } catch (_error) {
+                        // Snapshot inválido já será descartado pelos demais candidatos.
+                    }
                 }
                 const matchingTribe = candidates.filter((candidate) => candidate.overlap > 0);
                 if (matchingTribe.length) {
-                    matchingTribe.sort((a, b) => b.overlap - a.overlap || b.savedAt - a.savedAt);
+                    // A cobertura vem antes da chave atual: uma atualização individual
+                    // recente não pode esconder uma coleta completa usada na distribuição.
+                    matchingTribe.sort((a, b) => b.overlap - a.overlap
+                        || b.memberCount - a.memberCount
+                        || Number(b.key === exactKey) - Number(a.key === exactKey)
+                        || b.savedAt - a.savedAt);
                     return matchingTribe[0].raw;
                 }
-                return findLatestTroopSnapshotPayload(expectedPlayerIds);
+                candidates.sort((a, b) => b.memberCount - a.memberCount
+                    || Number(b.key === exactKey) - Number(a.key === exactKey)
+                    || b.savedAt - a.savedAt);
+                return candidates[0]?.raw || null;
             }
             if (!candidates.length) return prefix === TROOP_STORAGE_PREFIX ? findLatestTroopSnapshotPayload(expectedPlayerIds) : null;
             const matching = candidates.filter((candidate) => candidate.allyMatch);
