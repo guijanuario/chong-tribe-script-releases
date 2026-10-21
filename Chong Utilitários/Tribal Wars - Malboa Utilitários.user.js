@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.6', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.7', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -5084,6 +5084,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
             for (const member of members) {
                 if (state.cancelled) break;
+                if (normalizeText(member.name).includes('sem permissao')) {
+                    state.errors.set(member.id, 'Sem permissão de visualização; membro ignorado automaticamente.');
+                    state.processed += 1;
+                    render();
+                    if (!state.cancelled && state.processed < members.length) await wait(REQUEST_INTERVAL_MS);
+                    continue;
+                }
                 try {
                     const result = await fetchMember(member);
                     state.results.set(member.id, result);
