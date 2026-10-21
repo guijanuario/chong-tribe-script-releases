@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.8', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.9', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3596,6 +3596,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         const HISTORY_LIMIT = 30;
         const HISTORY_SNAPSHOT_LIMIT = 8;
         const REQUEST_INTERVAL_MS = 650;
+        const MEMBER_REQUEST_TIMEOUT_MS = Math.max(250, Number(window.__CHONG_TROOP_REQUEST_TIMEOUT_MS__) || 10000);
         const UNIT_ORDER = [
             'spear', 'sword', 'axe', 'archer', 'spy', 'light',
             'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob', 'militia'
@@ -3687,6 +3688,28 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function wait(ms) {
             return new Promise((resolve) => window.setTimeout(resolve, ms));
+        }
+
+        async function fetchWithMemberTimeout(url, options, label) {
+            const controller = new AbortController();
+            const outerSignal = state.abortController?.signal;
+            let timedOut = false;
+            const abortFromOuter = () => controller.abort();
+            if (outerSignal?.aborted) throw new DOMException('Carregamento cancelado.', 'AbortError');
+            outerSignal?.addEventListener('abort', abortFromOuter, { once: true });
+            const timer = window.setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+            }, MEMBER_REQUEST_TIMEOUT_MS);
+            try {
+                return await fetch(url, { ...options, signal: controller.signal });
+            } catch (error) {
+                if (timedOut) throw new Error(`${label} não respondeu em ${Math.max(1, Math.ceil(MEMBER_REQUEST_TIMEOUT_MS / 1000))}s; membro ignorado.`);
+                throw error;
+            } finally {
+                window.clearTimeout(timer);
+                outerSignal?.removeEventListener('abort', abortFromOuter);
+            }
         }
 
         function notify(message, type = 'success') {
@@ -4414,26 +4437,24 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         async function fetchMember(member) {
-            const response = await fetch(buildMemberUrl(member.id, 'members_defense'), {
+            const response = await fetchWithMemberTimeout(buildMemberUrl(member.id, 'members_defense'), {
                 method: 'GET',
                 credentials: 'include',
                 cache: 'no-store',
-                signal: state.abortController.signal,
                 headers: { Accept: 'text/html,application/xhtml+xml' }
-            });
+            }, 'A página de Defesa');
             if (!response.ok) throw new Error(`Falha HTTP ${response.status}.`);
 
             const html = await response.text();
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const result = parseDefenseDocument(doc, member);
             try {
-                const troopResponse = await fetch(buildMemberUrl(member.id, 'members_troops'), {
+                const troopResponse = await fetchWithMemberTimeout(buildMemberUrl(member.id, 'members_troops'), {
                     method: 'GET',
                     credentials: 'include',
                     cache: 'no-store',
-                    signal: state.abortController.signal,
                     headers: { Accept: 'text/html,application/xhtml+xml' }
-                });
+                }, 'A página de Tropas');
                 if (!troopResponse.ok) throw new Error(`Falha HTTP ${troopResponse.status}.`);
                 const troopHtml = await troopResponse.text();
                 const troopDocument = new DOMParser().parseFromString(troopHtml, 'text/html');
