@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.10', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.11', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -3321,7 +3321,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         'use strict';
 
         const SCRIPT_ID = 'chong-tribe-blind-assistant';
-        const MODULE_VERSION = '1.1.0';
+        const MODULE_VERSION = '1.1.1';
         const FLOW_PARAM = 'cts_blind_assistant';
         const TROOP_PREFIX = 'chonguera_tropas_tribo_v2';
         const BLIND_PREFIX = 'chonguera_blind_preventivo_result';
@@ -3377,6 +3377,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return newest;
         }
 
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            payload.results = payload.results.map((result) => ({
+                ...result,
+                villageDetails: (result.villageDetails || []).map((village) => Array.isArray(village) ? {
+                    id: village[0], name: village[1], coordinate: village[2], points: village[3],
+                    home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                    transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                    offense: village[6], ownershipStatus: village[7] || 'unknown'
+                } : village)
+            }));
+            return payload;
+        }
+
         function savedBlindAnalyses() {
             const analyses = [];
             const current = compatiblePayload(BLIND_PREFIX);
@@ -3418,7 +3433,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function statusSnapshot() {
-            const troops = compatiblePayload(TROOP_PREFIX);
+            const troops = expandTroopPayload(compatiblePayload(TROOP_PREFIX));
             const villages = (troops?.results || []).flatMap((result) => result.villageDetails || []);
             const verified = villages.filter((village) => village.ownershipStatus === 'verified').length;
             const pending = Math.max(0, villages.length - verified);
@@ -3903,6 +3918,62 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             saveHistory();
         }
 
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            return {
+                ...payload,
+                results: payload.results.map((result) => ({
+                    ...result,
+                    villageDetails: (result.villageDetails || []).map((village) => {
+                        if (!Array.isArray(village)) return village;
+                        const offense = Array.isArray(village[6]) ? village[6] : null;
+                        return {
+                            id: village[0],
+                            name: village[1],
+                            coordinate: village[2],
+                            points: village[3],
+                            home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                            transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                            offense,
+                            ownedTotal: offense ? Object.fromEntries(OFFENSIVE_OPERATION_UNITS.map((unit, index) => [unit, Number(offense[index]) || 0])) : undefined,
+                            ownershipStatus: village[7] || 'unknown'
+                        };
+                    })
+                }))
+            };
+        }
+
+        function compactTroopPayload(payload) {
+            if (!payload || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            return {
+                ...payload,
+                encoding: 'compact-v1',
+                results: payload.results.map((result) => ({
+                    ...result,
+                    villageDetails: (result.villageDetails || []).map((village) => {
+                        if (Array.isArray(village)) return village;
+                        const offense = Array.isArray(village.offense)
+                            ? village.offense
+                            : village.ownedTotal
+                                ? OFFENSIVE_OPERATION_UNITS.map((unit) => parseGameNumber(village.ownedTotal?.[unit]))
+                                : null;
+                        return [
+                            String(village.id || ''),
+                            String(village.name || ''),
+                            String(village.coordinate || ''),
+                            Number(village.points) || 0,
+                            units.map((unit) => parseGameNumber(village.home?.[unit])),
+                            units.map((unit) => parseGameNumber(village.transit?.[unit])),
+                            offense,
+                            village.ownershipStatus || 'unknown'
+                        ];
+                    })
+                }))
+            };
+        }
+
         function readStoredPayload() {
             const preferred = getStorageKey();
             const world = String(window.game_data?.world || window.location.hostname);
@@ -3921,7 +3992,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const raw = window.localStorage.getItem(key);
                 if (!raw) continue;
                 try {
-                    const payload = JSON.parse(raw);
+                    const payload = expandTroopPayload(JSON.parse(raw));
                     if (payload?.version !== 2 || !Array.isArray(payload.results) || !payload.results.length) continue;
                     const overlap = payload.results.reduce((total, result) => total + Number(currentMemberIds.has(String(result?.id || ''))), 0);
                     if (key !== preferred && overlap <= 0) continue;
@@ -3956,7 +4027,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 unitIcons: mergedIcons,
                 results: Array.from(mergedResults.values())
             };
-            const mergedRaw = JSON.stringify(mergedPayload);
+            const mergedRaw = JSON.stringify(compactTroopPayload(mergedPayload));
             const preferredRaw = window.localStorage.getItem(preferred);
             if (preferredRaw !== mergedRaw) {
                 try {
@@ -3998,16 +4069,17 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     icons: Object.fromEntries(result.icons),
                     loadedAt: result.loadedAt instanceof Date ? result.loadedAt.toISOString() : result.loadedAt
                 }));
-            return {
+            return compactTroopPayload({
                 version: 2,
                 savedAt,
                 unitOrder: state.unitOrder,
                 unitIcons: Object.fromEntries(state.unitIcons),
                 results
-            };
+            });
         }
 
         function applyStoredPayload(payload) {
+            payload = expandTroopPayload(payload);
             if (payload?.version !== 2 || !Array.isArray(payload.results)) return false;
             const currentMemberIds = new Set(state.members.map((member) => String(member.id)));
             const storedUnits = Array.isArray(payload.unitOrder) ? payload.unitOrder.filter(Boolean) : [];
@@ -5565,7 +5637,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         'use strict';
 
         const SCRIPT_ID = 'chonguera-auditoria-apoios';
-        const MODULE_VERSION = '1.5.0';
+        const MODULE_VERSION = '1.5.1';
         const STORAGE_PREFIX = 'chonguera_auditoria_apoios_v1';
         const TROOP_STORAGE_PREFIX = 'chonguera_tropas_tribo_v2';
         const BLIND_STORAGE_PREFIX = 'chonguera_blind_preventivo_result';
@@ -5892,7 +5964,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function buildDistributorSourceRecommendation() {
-            const troopPayload = readJson(`${TROOP_STORAGE_PREFIX}:${world}:${allyId || 'sem_tribo'}`);
+            const troopPayload = expandTroopPayload(readJson(`${TROOP_STORAGE_PREFIX}:${world}:${allyId || 'sem_tribo'}`));
             const config = readJson(`${DISTRIBUTOR_CONFIG_PREFIX}:${world}`) || {};
             const blindPayload = findSelectedBlindPayload(config.blindSnapshotId);
             if (!troopPayload?.results?.length || !blindPayload) return null;
@@ -5999,6 +6071,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         function readJson(key) {
             try { return JSON.parse(localStorage.getItem(key) || 'null'); }
             catch (_error) { return null; }
+        }
+
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            payload.results = payload.results.map((result) => ({
+                ...result,
+                villageDetails: (result.villageDetails || []).map((village) => Array.isArray(village) ? {
+                    id: village[0], name: village[1], coordinate: village[2], points: village[3],
+                    home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                    transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                    offense: village[6], ownershipStatus: village[7] || 'unknown'
+                } : village)
+            }));
+            return payload;
         }
 
         function parsePlayerNames(value) {
@@ -6793,6 +6880,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return (payload?.results || []).reduce((total, result) => total + Number(expectedPlayerIds.has(String(result?.id || ''))), 0);
         }
 
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            payload.results = payload.results.map((result) => ({
+                ...result,
+                villageDetails: (result.villageDetails || []).map((village) => Array.isArray(village) ? {
+                    id: village[0], name: village[1], coordinate: village[2], points: village[3],
+                    home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                    transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                    offense: village[6], ownershipStatus: village[7] || 'unknown'
+                } : village)
+            }));
+            return payload;
+        }
+
         function findTroopStoragePayload(expectedPlayerIds = null) {
             const world = String(window.game_data?.world || window.location.hostname);
             const preferredKey = troopStorageKey();
@@ -6851,7 +6953,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             try {
                 const raw = findTroopStoragePayload(expectedPlayerIds);
                 if (!raw) return { index, count: 0, savedAt: null };
-                const payload = JSON.parse(raw);
+                const payload = expandTroopPayload(JSON.parse(raw));
                 if (payload?.version !== 2 || !Array.isArray(payload.results)) return { index, count: 0, savedAt: null };
                 payload.results.forEach((result) => {
                     (result.villageDetails || []).forEach((village) => {
@@ -8661,6 +8763,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return (payload?.results || []).reduce((total, result) => total + Number(expectedPlayerIds.has(String(result?.id || ''))), 0);
         }
 
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            payload.results = payload.results.map((result) => ({
+                ...result,
+                villageDetails: (result.villageDetails || []).map((village) => Array.isArray(village) ? {
+                    id: village[0], name: village[1], coordinate: village[2], points: village[3],
+                    home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                    transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                    offense: village[6], ownershipStatus: village[7] || 'unknown'
+                } : village)
+            }));
+            return payload;
+        }
+
         function findPayload(prefix, expectedPlayerIds = null) {
             const exactKey = preferredKey(prefix);
             const currentAlly = allyId();
@@ -9075,7 +9192,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             ].map((item) => String(item?.playerId || '')).filter(Boolean));
             const troopRaw = findPayload(TROOP_STORAGE_PREFIX, expectedPlayerIds);
             try {
-                const parsed = JSON.parse(troopRaw || 'null');
+                const parsed = expandTroopPayload(JSON.parse(troopRaw || 'null'));
                 if (parsed?.version === 2 && Array.isArray(parsed.results)) state.troopPayload = parsed;
             } catch (error) {
                 console.warn('[Chong Tribe Script] Storage de tropas inválido:', error);
@@ -10622,9 +10739,24 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return null;
         }
 
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            payload.results = payload.results.map((result) => ({
+                ...result,
+                villageDetails: (result.villageDetails || []).map((village) => Array.isArray(village) ? {
+                    id: village[0], name: village[1], coordinate: village[2], points: village[3],
+                    home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                    transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                    offense: village[6], ownershipStatus: village[7] || 'unknown'
+                } : village)
+            }));
+            return payload;
+        }
+
         function loadPayload() {
             try {
-                const payload = JSON.parse(findTroopPayload() || 'null');
+                const payload = expandTroopPayload(JSON.parse(findTroopPayload() || 'null'));
                 return payload?.version === 2 && Array.isArray(payload.results) ? payload : null;
             } catch (error) {
                 console.warn('[Montador de Operações] Dados de tropas inválidos:', error);
@@ -12925,6 +13057,21 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }
         }
 
+        function expandTroopPayload(payload) {
+            if (payload?.encoding !== 'compact-v1' || !Array.isArray(payload.results)) return payload;
+            const units = Array.isArray(payload.unitOrder) ? payload.unitOrder : [];
+            payload.results = payload.results.map((result) => ({
+                ...result,
+                villageDetails: (result.villageDetails || []).map((village) => Array.isArray(village) ? {
+                    id: village[0], name: village[1], coordinate: village[2], points: village[3],
+                    home: Object.fromEntries(units.map((unit, index) => [unit, Number(village[4]?.[index]) || 0])),
+                    transit: Object.fromEntries(units.map((unit, index) => [unit, Number(village[5]?.[index]) || 0])),
+                    offense: village[6], ownershipStatus: village[7] || 'unknown'
+                } : village)
+            }));
+            return payload;
+        }
+
         function loadTroopData() {
             state.recordsById.clear();
             state.recordsByCoord.clear();
@@ -12935,7 +13082,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             try {
                 const raw = findStoragePayload();
                 if (!raw) return { count: 0, savedAt: null };
-                const payload = JSON.parse(raw);
+                const payload = expandTroopPayload(JSON.parse(raw));
                 if (payload?.version !== 2 || !Array.isArray(payload.results)) {
                     throw new Error('Formato de armazenamento incompatível.');
                 }
