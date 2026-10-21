@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.9', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.10', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -4222,14 +4222,31 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function clearStoredData() {
             if (state.running) return;
-            getCompatibleStorageKeys().forEach((key) => window.localStorage.removeItem(key));
+            if (!window.confirm(
+                'Apagar todas as coletas e versões restauráveis de tropas deste mundo?\n\n'
+                + 'O histórico também será removido. As configurações do Blind e do Distribuidor serão preservadas.'
+            )) return;
+            const world = String(window.game_data?.world || window.location.hostname);
+            const troopMarker = `_tropas_tribo_v2:${world}:`;
+            const historyPrefix = `${HISTORY_STORAGE_PREFIX}:${world}:`;
+            const snapshotPrefix = `${HISTORY_SNAPSHOT_PREFIX}:${world}:`;
+            const keysToRemove = [];
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (!key) continue;
+                const isTroopPayload = key.includes(troopMarker) && !key.endsWith(':strategic-settings');
+                if (isTroopPayload || key.startsWith(historyPrefix) || key.startsWith(snapshotPrefix)) keysToRemove.push(key);
+            }
+            keysToRemove.forEach((key) => window.localStorage.removeItem(key));
             state.results.clear();
             state.errors.clear();
+            state.history = [];
+            state.historySnapshots.clear();
             state.unitOrder = availableWorldUnits();
             state.unitIcons.clear();
             state.savedAt = null;
             render();
-            notify('Dados de tropas removidos do armazenamento do navegador.');
+            notify(`${keysToRemove.length} item(ns) de tropas, histórico e versões foram removidos deste mundo.`);
         }
 
         function findMemberSelect(doc = document) {
@@ -5336,7 +5353,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         <button type="button" class="btn btn-confirm-yes" data-action="load-all">Carregar e validar origens</button>
                         <button type="button" class="btn" data-action="cancel" hidden>Cancelar</button>
                         <button type="button" class="btn" data-action="export">Exportar CSV</button>
-                        <button type="button" class="btn" data-action="clear-storage">Limpar dados salvos</button>
+                        <button type="button" class="btn" data-action="clear-storage">Apagar tropas e versões</button>
                     </div>
                 </div>
                 <div class="mtt-progress" hidden>
