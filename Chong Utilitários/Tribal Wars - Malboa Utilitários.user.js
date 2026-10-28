@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.11', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.12', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -10683,6 +10683,28 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return rules;
         }
 
+        function parseNtTargetReservations(value) {
+            const reservations = new Map();
+            String(value || '').split(/\r?\n/).forEach((rawLine, index) => {
+                const line = rawLine.trim();
+                if (!line) return;
+                const coordinates = [...line.matchAll(/\b(\d{3}\|\d{3})\b/g)].map((match) => match[1]);
+                if (!coordinates.length) throw new Error(`Linha ${index + 1} das reservas de NT não possui coordenada válida.`);
+                const firstCoordinateIndex = line.indexOf(coordinates[0]);
+                const displayName = line.slice(0, firstCoordinateIndex).replace(/[\s;,:=\-]+$/g, '').trim();
+                const normalizedName = normalizeName(displayName);
+                if (!normalizedName) throw new Error(`Informe o nick antes das coordenadas na linha ${index + 1} das reservas de NT.`);
+                coordinates.forEach((coordinate) => {
+                    const existing = reservations.get(coordinate);
+                    if (existing && existing.normalizedName !== normalizedName) {
+                        throw new Error(`O alvo ${coordinate} foi reservado para ${existing.displayName} e ${displayName}. Deixe-o com somente um jogador.`);
+                    }
+                    if (!existing) reservations.set(coordinate, { coordinate, displayName, normalizedName, inputOrder: reservations.size });
+                });
+            });
+            return reservations;
+        }
+
         function parseNtFullPlan(value) {
             const targets = new Map();
             let commands = 0;
@@ -10791,6 +10813,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....',
                     fakePlayers: '',
                     ntPlayers: '',
+                    ntTargetReservations: '',
                     ntFullPlanText: '',
                     defaultFakes: 1,
                     defaultFakeCatapults: 12,
@@ -10798,7 +10821,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     ...JSON.parse(localStorage.getItem(configKey()) || '{}')
                 };
             } catch (_error) {
-                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, defaultFakeCatapults: 12, fakePlayers: '', ntPlayers: '', ntFullPlanText: '', fullPlayerUsage: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
+                return { operationMode: 'fakes', thresholds: {}, defaultFulls: 5, defaultFakes: 1, defaultFakeCatapults: 12, fakePlayers: '', ntPlayers: '', ntTargetReservations: '', ntFullPlanText: '', fullPlayerUsage: '', quantityMode: 'fixed', pointFulls: { low: '', medium: '', high: '' }, strategy: 'balanced-nearest', operationAt: '', operationName: 'MATA *TEM*', messageMinimums: { axe: 4000, light: 2000, ram: 200 }, fullMessageNote: 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....' };
             }
         }
 
@@ -10952,6 +10975,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 fullMessageNote: panel.querySelector('[name="full_message_note"]').value,
                 fakePlayers: panel.querySelector('[name="fake_players"]').value,
                 ntPlayers: panel.querySelector('[name="nt_players"]').value,
+                ntTargetReservations: panel.querySelector('[name="nt_target_reservations"]').value,
                 ntFullPlanText: panel.querySelector('[name="nt_full_plan_text"]').value,
                 defaultFakes: Math.max(1, num(panel.querySelector('[name="default_fakes"]').value)),
                 defaultFakeCatapults: Math.max(1, num(panel.querySelector('[name="default_fake_catapults"]').value)),
@@ -11235,7 +11259,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             };
         }
 
-        function buildNtPlan(candidates, targets) {
+        function buildNtPlan(candidates, targets, reservationText) {
             const players = new Map();
             candidates.forEach((village) => {
                 const normalized = normalizeName(village.playerName);
@@ -11247,6 +11271,32 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             });
             const remainingTargets = new Map(targets.map((target) => [target.coordinate, target]));
             const assignments = [];
+            const playersByName = new Map([...players.values()].map((player) => [normalizeName(player.playerName), player]));
+            const reservations = parseNtTargetReservations(reservationText);
+            const reservedCountByPlayer = new Map();
+            reservations.forEach((reservation) => {
+                const rule = state.ntPlayerRules.get(reservation.normalizedName);
+                if (!rule) throw new Error(`${reservation.displayName} possui alvo reservado, mas não está na lista de jogadores que enviarão NT.`);
+                const player = playersByName.get(reservation.normalizedName);
+                if (!player) throw new Error(`Não encontrei aldeias de referência para ${reservation.displayName}. Confira o nick informado nas reservas de NT.`);
+                if (!remainingTargets.has(reservation.coordinate)) throw new Error(`O alvo reservado ${reservation.coordinate} não está na lista geral de alvos da operação.`);
+                const reservedCount = (reservedCountByPlayer.get(reservation.normalizedName) || 0) + 1;
+                if (reservedCount > rule.quantity) throw new Error(`${reservation.displayName} possui ${reservedCount} alvos reservados, mas foi configurado para enviar somente ${rule.quantity} NT(s).`);
+                reservedCountByPlayer.set(reservation.normalizedName, reservedCount);
+                const target = remainingTargets.get(reservation.coordinate);
+                const source = chooseSource(player.villages, target, 'balanced-nearest');
+                if (!source) throw new Error(`Não foi possível calcular uma aldeia de referência para ${reservation.displayName} no alvo ${reservation.coordinate}.`);
+                player.assigned += 1;
+                remainingTargets.delete(reservation.coordinate);
+                assignments.push({
+                    source,
+                    target,
+                    morale: moraleFor(source, target),
+                    distance: distance(source, target),
+                    reserved: true,
+                    sequence: assignments.length + 1
+                });
+            });
             while (remainingTargets.size && [...players.values()].some((player) => player.assigned < player.requested)) {
                 const options = [];
                 players.forEach((player) => {
@@ -11278,6 +11328,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     target: chosen.target,
                     morale: chosen.morale,
                     distance: chosen.distance,
+                    reserved: false,
                     sequence: assignments.length + 1
                 });
             }
@@ -11678,11 +11729,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     : 'A configuração de moral não pôde ser confirmada; quando possível, foi usada uma estimativa por pontos.';
             panel.querySelector('.cmo-results').innerHTML = `
                 <div class="cmo-summary"><div><strong>${formatNumber(state.ntPlayerRules.size)}</strong><span>Jogadores informados</span></div><div><strong>${formatNumber(state.candidates.length)}</strong><span>Aldeias de referência</span></div><div><strong>${formatNumber(state.targets.length)}</strong><span>Alvos disponíveis</span></div><div><strong>${formatNumber(requested)}</strong><span>NTs solicitados</span></div><div class="${planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(state.assignments.length) : '—'}</strong><span>NTs distribuídos</span></div><div class="${planned && missing ? 'cmo-bad' : planned ? 'cmo-ok' : ''}"><strong>${planned ? formatNumber(missing) : '—'}</strong><span>NTs faltantes</span></div></div>
-                <div class="cmo-data-info">${moraleNotice} As aldeias dos jogadores servem apenas para calcular a distância; <strong>nenhuma tropa, nobre ou NT pronto é validado</strong>. Cada alvo é entregue uma única vez.<br>TXT de fulls: <strong>${formatNumber(importedFulls)} comando(s) em ${formatNumber(state.ntFullPlanByTarget.size)} alvo(s)</strong>; ${formatNumber(matchedTargets)} alvo(s) desta operação com NT foram encontrados no arquivo.${state.ntUnassignedTargets.length ? `<br><strong>${formatNumber(state.ntUnassignedTargets.length)} alvo(s) sobraram sem uso porque a quantidade de alvos foi maior que a quantidade de NTs solicitada.</strong>` : ''}</div>
+                <div class="cmo-data-info">${moraleNotice} As aldeias dos jogadores servem apenas para calcular a distância; <strong>nenhuma tropa, nobre ou NT pronto é validado</strong>. Cada alvo é entregue uma única vez. Os alvos reservados manualmente são designados primeiro e o restante segue a distribuição automática.<br>TXT de fulls: <strong>${formatNumber(importedFulls)} comando(s) em ${formatNumber(state.ntFullPlanByTarget.size)} alvo(s)</strong>; ${formatNumber(matchedTargets)} alvo(s) desta operação com NT foram encontrados no arquivo.${state.ntUnassignedTargets.length ? `<br><strong>${formatNumber(state.ntUnassignedTargets.length)} alvo(s) sobraram sem uso porque a quantidade de alvos foi maior que a quantidade de NTs solicitada.</strong>` : ''}</div>
                 ${missingNotice}
                 ${renderNtPlayerSummary()}
                 ${renderMap()}
-                ${planned ? `<section><div class="cmo-section-head"><div><h3>Distribuição dos NTs</h3><small>Prioridade: maior moral, depois menor distância.</small></div></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Jogador</th><th>Alvo</th><th>Dono do alvo</th><th>Pontos</th><th>Moral</th><th>Aldeia próxima (referência)</th><th>Distância</th><th>Fulls encontrados no TXT</th><th>Chegada</th></tr></thead><tbody>${state.assignments.map((item) => `<tr><td>${escapeHtml(item.source.playerName)}</td><td><a href="${escapeHtml(mapUrl(item.target))}" target="_blank">${escapeHtml(item.target.coordinate)}</a></td><td>${escapeHtml(item.target.playerName || '—')}</td><td>${item.target.points === null ? '—' : formatNumber(item.target.points)}</td><td><strong>${formatMorale(item.morale)}</strong></td><td><a href="${escapeHtml(villageUrl(item.source))}" target="_blank">${escapeHtml(item.source.coordinate)}</a></td><td>${formatDistance(item.distance)} campos</td><td>${escapeHtml(ntFullSupportText(item.target.coordinate))}</td><td>${escapeHtml(formatOperationAtPrecise(state.operationAt) || 'A definir')}</td></tr>`).join('')}</tbody></table></div></section>
+                ${planned ? `<section><div class="cmo-section-head"><div><h3>Distribuição dos NTs</h3><small>Alvos reservados primeiro; no restante, maior moral e depois menor distância.</small></div></div><div class="cmo-table-wrap"><table class="vis cmo-table"><thead><tr><th>Jogador</th><th>Alvo</th><th>Distribuição</th><th>Dono do alvo</th><th>Pontos</th><th>Moral</th><th>Aldeia próxima (referência)</th><th>Distância</th><th>Fulls encontrados no TXT</th><th>Chegada</th></tr></thead><tbody>${state.assignments.map((item) => `<tr><td>${escapeHtml(item.source.playerName)}</td><td><a href="${escapeHtml(mapUrl(item.target))}" target="_blank">${escapeHtml(item.target.coordinate)}</a></td><td><strong>${item.reserved ? 'Reservado manualmente' : 'Automática'}</strong></td><td>${escapeHtml(item.target.playerName || '—')}</td><td>${item.target.points === null ? '—' : formatNumber(item.target.points)}</td><td><strong>${formatMorale(item.morale)}</strong></td><td><a href="${escapeHtml(villageUrl(item.source))}" target="_blank">${escapeHtml(item.source.coordinate)}</a></td><td>${formatDistance(item.distance)} campos</td><td>${escapeHtml(ntFullSupportText(item.target.coordinate))}</td><td>${escapeHtml(formatOperationAtPrecise(state.operationAt) || 'A definir')}</td></tr>`).join('')}</tbody></table></div></section>
                 <section><div class="cmo-section-head"><div><h3>Mensagens por jogador</h3><small>Cada MP contém alvos, moral, distância, referência geográfica e horário.</small></div><div class="cmo-head-actions"><button type="button" class="btn" data-action="copy-operation">Copiar operação completa</button><button type="button" class="btn cmo-primary" data-action="export-messages">Baixar MPs em TXT</button></div></div><div class="cmo-messages">${state.messages.map((message, index) => `<article><header><strong>${escapeHtml(message.playerName)}</strong><button type="button" class="btn" data-copy-message="${index}">Copiar mensagem</button></header><textarea readonly>${escapeHtml(message.text)}</textarea></article>`).join('') || '<div class="cmo-empty">Nenhuma mensagem gerada.</div>'}</div></section>` : '<div class="cmo-empty">Informe os jogadores com as quantidades de NT e as coordenadas dos alvos.</div>'}`;
             panel.querySelector('[data-action="export-csv"]').disabled = !state.assignments.length;
         }
@@ -11755,7 +11806,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             if (!state.assignments.length) return;
             const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
             const rows = state.operationMode === 'nt'
-                ? [['Sequência', 'Jogador', 'Alvo', 'Defensor', 'Pontos do alvo', 'Moral', 'Aldeia próxima (referência)', 'Distância', 'Jogadores dos fulls', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.target.coordinate, item.target.playerName || '', item.target.points ?? '', formatMorale(item.morale), item.source.coordinate, item.distance.toFixed(2), ntFullSupportText(item.target.coordinate), formatOperationAtPrecise(state.operationAt)])]
+                ? [['Sequência', 'Jogador', 'Alvo', 'Distribuição', 'Defensor', 'Pontos do alvo', 'Moral', 'Aldeia próxima (referência)', 'Distância', 'Jogadores dos fulls', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.target.coordinate, item.reserved ? 'Reservado manualmente' : 'Automática', item.target.playerName || '', item.target.points ?? '', formatMorale(item.morale), item.source.coordinate, item.distance.toFixed(2), ntFullSupportText(item.target.coordinate), formatOperationAtPrecise(state.operationAt)])]
                 : state.operationMode === 'fake-catapult'
                 ? [['Sequência', 'Jogador', 'Origem', 'Alvo', 'Edifício', 'Catapultas', 'Exploradores', 'Distância', 'Chegada'], ...state.assignments.map((item) => [item.sequence, item.source.playerName, item.source.coordinate, item.target.coordinate, item.building.label, item.catapultCount, item.spyCount, item.distance.toFixed(2), formatOperationAtPrecise(state.operationAt)])]
                 : state.operationMode === 'fakes'
@@ -11803,7 +11854,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     if (runId !== state.runSequence) return;
                     state.missing = [];
                     if (planned && state.targets.length) {
-                        const plan = buildNtPlan(state.candidates, state.targets);
+                        const plan = buildNtPlan(state.candidates, state.targets, config.ntTargetReservations);
                         state.assignments = plan.assignments;
                         state.ntPlayerUsage = plan.usage;
                         state.ntUnassignedTargets = plan.unassignedTargets;
@@ -11953,12 +12004,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     <div class="cmo-mode-card"><label><span>Tipo de operação</span><select name="operation_mode"><option value="fakes" ${config.operationMode === 'fakes' ? 'selected' : ''}>Operação de Fakes — distribuir coordenadas</option><option value="fake-catapult" ${config.operationMode === 'fake-catapult' ? 'selected' : ''}>Fake Catapulta — 50 catas + 5 exploradores</option><option value="nt" ${config.operationMode === 'nt' ? 'selected' : ''}>Operação com NT — distância e moral</option><option value="fulls" ${config.operationMode === 'fulls' ? 'selected' : ''}>Operação de Fulls — reservar tropas</option></select></label><p>Os quatro modos são independentes. Troque aqui sem perder as configurações já preenchidas.</p></div>
                     <div class="cmo-card" data-mode-only="fakes"><strong>Jogadores que receberão os fakes</strong><label><span>Um por linha — formato NICK; QUANTIDADE DE ALVOS</span><textarea name="fake_players" placeholder="Chonguera; 10\nTREVORWARSs; 8\nDurock">${escapeHtml(config.fakePlayers || '')}</textarea></label><small class="cmo-target-help"><strong>Com número:</strong> recebe até aquela quantidade de aldeias-alvo. <strong>Sem número:</strong> divide automaticamente os alvos que sobrarem. A forma antiga “Jogador1; Jogador2” continua aceita.</small></div>
                     <div class="cmo-card" data-mode-only="nt"><strong>Jogadores que enviarão NT</strong><label><span>Um por linha — formato NICK; QUANTIDADE DE NTS</span><textarea name="nt_players" placeholder="Chonguera; 3\nTREVORWARSs; 2\nDurock; 1">${escapeHtml(config.ntPlayers || '')}</textarea></label><small class="cmo-target-help">Cada NT informado recebe uma aldeia-alvo diferente. Se a quantidade for omitida, será considerado 1 NT. Nenhuma tropa ou nobre pronto será validado.</small></div>
+                    <div class="cmo-card" data-mode-only="nt"><strong>Alvos reservados por jogador</strong><label><span>Uma linha por jogador — formato NICK; COORDENADA; COORDENADA</span><textarea name="nt_target_reservations" placeholder="Durock; 447|494; 446|489\nReichert08; 447|489">${escapeHtml(config.ntTargetReservations || '')}</textarea></label><small class="cmo-target-help">Opcional. As coordenadas também precisam estar na lista geral de alvos. Cada reserva conta na quantidade de NTs do jogador; os alvos restantes são distribuídos automaticamente entre as vagas que sobrarem.</small></div>
                     <div class="cmo-card" data-mode-only="nt"><strong>TXT da operação de fulls</strong><label><span>Selecione o TXT exportado pelo Montador de Fulls</span><input type="file" name="nt_full_plan_file" accept=".txt,text/plain"></label><textarea name="nt_full_plan_text" hidden>${escapeHtml(config.ntFullPlanText || '')}</textarea><small class="cmo-target-help" data-nt-full-plan-status></small><div class="cmo-actions"><button type="button" class="btn" data-action="clear-nt-full-plan">Remover TXT salvo</button></div><small class="cmo-target-help">O cruzamento usa destino e jogador de cada full. Na MP do NT aparecerá quem deve compartilhar os comandos daquele alvo.</small></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Definição dinâmica de full — mínimos totais (aldeia + fora)</strong><div class="cmo-unit-grid">${state.units.length ? state.units.map((unit) => `<label><span>${escapeHtml(unit.label)}</span><input type="number" min="0" step="1" data-unit="${unit.id}" value="${num(config.thresholds?.[unit.id] ?? unit.default)}" placeholder="0 = ignorar"></label>`).join('') : '<span>Carregue as tropas para detectar as unidades deste mundo.</span>'}</div></div>
                     <div class="cmo-card"><strong>Alvos da operação</strong><label><span>Coordenadas — uma por linha; quantidade individual opcional</span><textarea name="targets" placeholder="500|500\n501|501; 8">${escapeHtml(config.targets || '')}</textarea></label><small class="cmo-target-help" data-mode-only="fakes">Ex.: 501|501; 8 solicita 8 fakes para esse alvo. Sem número, usa a quantidade padrão abaixo.</small><small class="cmo-target-help" data-mode-only="fake-catapult">Ex.: 501|501; 12 solicita 12 fake catas: 4 na Fazenda, 4 no Armazém e 4 no Ferreiro.</small><small class="cmo-target-help" data-mode-only="nt">Informe somente as coordenadas. Cada aldeia pode ser designada para apenas um NT; números após a coordenada são ignorados neste modo.</small><small class="cmo-target-help" data-mode-only="fulls">Ex.: 501|501; 8 solicita 8 fulls somente para esse alvo.</small><div data-mode-only="fakes"><label><span>Quantidade padrão de fakes por aldeia-alvo</span><input type="number" min="1" name="default_fakes" value="${Math.max(1, num(config.defaultFakes || 1))}"></label></div><div data-mode-only="fake-catapult"><label><span>Quantidade padrão de fake catapulta por aldeia-alvo</span><input type="number" min="1" name="default_fake_catapults" value="${Math.max(1, num(config.defaultFakeCatapults || 12))}"></label><small class="cmo-target-help">Cada comando usa 50 catapultas + 5 exploradores. A divisão entre os três edifícios é automática.</small></div><div data-mode-only="fulls"><label><span>Como definir a quantidade</span><select name="quantity_mode"><option value="fixed" ${config.quantityMode !== 'points' ? 'selected' : ''}>Quantidade padrão para todos</option><option value="points" ${config.quantityMode === 'points' ? 'selected' : ''}>Usar quantidades definidas por faixa de pontos</option></select></label><label><span>Quantidade padrão de fulls por alvo (também usada como fallback)</span><input type="number" min="1" name="default_fulls" value="${Math.max(1, num(config.defaultFulls || 5))}"></label><div class="cmo-point-rules"><strong>Quantidades desta operação — preencha os três campos</strong><label><span>Abaixo de 6.000 pontos</span><input type="number" min="1" name="point_fulls_low" value="${num(config.pointFulls?.low) || ''}" placeholder="Ex.: 5"></label><label><span>De 6.000 a 9.000</span><input type="number" min="1" name="point_fulls_medium" value="${num(config.pointFulls?.medium) || ''}" placeholder="Ex.: 8 a 11"></label><label><span>Acima de 9.000 pontos</span><input type="number" min="1" name="point_fulls_high" value="${num(config.pointFulls?.high) || ''}" placeholder="Ex.: 12 a 15"></label></div></div></div>
                     <div class="cmo-card" data-mode-only="fulls,fake-catapult"><strong>Filtros e uso das aldeias de origem</strong><div class="cmo-unit-grid"><label><span>Permitir somente estes continentes</span><input name="include_continents" value="${escapeHtml(config.includeContinents || '')}" placeholder="Vazio = permitir todos"></label><label><span>Nunca utilizar estes continentes</span><input name="exclude_continents" value="${escapeHtml(config.excludeContinents || '')}" placeholder="Ex.: K55; K65"></label></div><small class="cmo-target-help">A primeira caixa limita as origens aos continentes informados. A segunda sempre remove os continentes informados.</small><label><span>Ignorar jogadores de origem — separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Jogador1; Jogador2">${escapeHtml(config.playerBlacklist || '')}</textarea></label><div data-mode-only="fulls"><label><span>Percentual de fulls reservado por jogador — um por linha</span><textarea name="full_player_usage" placeholder="Chonguera; 100\nJogador2; 50">${escapeHtml(config.fullPlayerUsage || '')}</textarea></label><small class="cmo-target-help">Formato: NICK; PERCENTUAL. Ex.: Chonguera; 100 reserva primeiro todos os fulls encontrados de Chonguera. Jogadores não informados dividem o restante.</small></div></div>
                     <div class="cmo-card" data-mode-only="fulls"><strong>Texto enviado nas MPs de full</strong><label><span>Nome da operação</span><input name="operation_name" value="${escapeHtml(config.operationName || 'MATA *TEM*')}" placeholder="Ex.: MATA *TEM*"></label><div class="cmo-unit-grid"><label><span>Bárbaros solicitados na MP</span><input type="number" min="0" name="message_min_axe" value="${num(config.messageMinimums?.axe ?? 4000)}"></label><label><span>Cavalarias leves solicitadas</span><input type="number" min="0" name="message_min_light" value="${num(config.messageMinimums?.light ?? 2000)}"></label><label><span>Aríetes solicitados</span><input type="number" min="0" name="message_min_ram" value="${num(config.messageMinimums?.ram ?? 200)}"></label></div><label><span>Observação após o padrão mínimo</span><textarea name="full_message_note">${escapeHtml(config.fullMessageNote || 'pois como os comandos de vcs vão sair só semana que vem é o tempo delas ficarem fulls....')}</textarea></label><small class="cmo-target-help">Esses valores alteram somente o texto da MP. Os mínimos usados para localizar fulls continuam sendo os campos do primeiro quadro.</small></div>
-                    <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" step="1" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa no formato HH:mm:ss:milissegundos.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. As metas individuais são preenchidas primeiro; depois, jogadores sem meta dividem o restante.</div><div data-mode-only="fake-catapult" class="cmo-data-info">As origens mais próximas com tropas disponíveis são usadas primeiro. Os comandos são divididos igualmente entre Fazenda, Armazém e Ferreiro.</div><div data-mode-only="nt" class="cmo-data-info">Cada NT recebe um alvo diferente. O cálculo escolhe primeiro a maior moral e usa a menor distância como desempate, sem verificar tropas ou nobres.</div></div>
+                    <div class="cmo-card"><strong>Planejamento e distribuição</strong><label><span>Data e hora em que os ataques devem chegar</span><input type="datetime-local" step="1" name="operation_at" value="${escapeHtml(config.operationAt || '')}"></label><small class="cmo-target-help">Essa informação aparecerá nas MPs e na operação completa no formato HH:mm:ss:milissegundos.</small><div data-mode-only="fulls"><label><span>Escolha das aldeias de origem</span><select name="strategy"><option value="balanced-nearest" ${config.strategy !== 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais próximas</option><option value="farthest" ${config.strategy === 'farthest' ? 'selected' : ''}>Priorizar alvos maiores — usar origens mais distantes</option></select></label><small class="cmo-target-help">Os alvos são sempre preenchidos do maior para o menor número de pontos.</small></div><div data-mode-only="fakes" class="cmo-data-info">Cada alvo será entregue inteiro a um jogador. As metas individuais são preenchidas primeiro; depois, jogadores sem meta dividem o restante.</div><div data-mode-only="fake-catapult" class="cmo-data-info">As origens mais próximas com tropas disponíveis são usadas primeiro. Os comandos são divididos igualmente entre Fazenda, Armazém e Ferreiro.</div><div data-mode-only="nt" class="cmo-data-info">As reservas manuais são aplicadas primeiro. Depois, cada NT restante recebe um alvo diferente, priorizando maior moral e usando menor distância como desempate, sem verificar tropas ou nobres.</div></div>
                     <div class="cmo-actions"><button type="button" class="btn" data-action="map-fulls" data-mode-only="fulls">Mapear fulls</button><button type="button" class="btn cmo-primary" data-action="plan">Distribuir fakes</button><button type="button" class="btn" data-action="export-csv" disabled>Exportar CSV</button></div>
                 </div>
                 <div class="cmo-results"></div>`;
