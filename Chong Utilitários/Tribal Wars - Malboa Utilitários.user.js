@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.14', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.15', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -6573,6 +6573,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             troopDataInfo: { count: 0, savedAt: null },
             analysisMode: 'tribes',
             requestedCoordinates: [],
+            coordinateRequirements: new Map(),
+            duplicateRequirementCoordinates: [],
             missingRequestedCoordinates: [],
             coordinateReview: [],
             coordinateSelectionLabel: ''
@@ -6644,10 +6646,48 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return { continents, invalid };
         }
 
+        function parseCoordinateRequests(value) {
+            const requests = new Map();
+            const duplicateCoordinates = new Set();
+            const invalidLines = [];
+            String(value || '').split(/\r?\n/).forEach((rawLine, lineIndex) => {
+                const line = rawLine.trim();
+                if (!line) return;
+                const matches = [...line.matchAll(/\b(\d{1,3}\|\d{1,3})\b(?:\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+))?/g)];
+                if (!matches.length || (line.includes('/') && !matches.some((match) => match[2] !== undefined))) {
+                    invalidLines.push(lineIndex + 1);
+                    return;
+                }
+                matches.forEach((match) => {
+                    const coordinate = match[1].split('|').map((part) => String(Number(part))).join('|');
+                    const required = match[2] === undefined ? null : {
+                        spear: Number(match[2]) || 0,
+                        sword: Number(match[3]) || 0,
+                        spy: Number(match[4]) || 0,
+                        heavy: Number(match[5]) || 0
+                    };
+                    if (!requests.has(coordinate)) {
+                        requests.set(coordinate, { coordinate, required });
+                        return;
+                    }
+                    duplicateCoordinates.add(coordinate);
+                    if (!required) return;
+                    const existing = requests.get(coordinate);
+                    existing.required = existing.required
+                        ? Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Math.max(Number(existing.required[unit.id]) || 0, Number(required[unit.id]) || 0)]))
+                        : required;
+                });
+            });
+            return {
+                coordinates: [...requests.keys()],
+                requirements: new Map([...requests.values()].filter((item) => item.required).map((item) => [item.coordinate, item.required])),
+                duplicateCoordinates: [...duplicateCoordinates],
+                invalidLines
+            };
+        }
+
         function parseCoordinateInput(value) {
-            return [...new Set((String(value || '').match(/\b\d{1,3}\|\d{1,3}\b/g) || [])
-                .map((coordinate) => coordinate.split('|').map((part) => String(Number(part))).join('|'))
-                .filter((coordinate) => /^\d{1,3}\|\d{1,3}$/.test(coordinate)))];
+            return parseCoordinateRequests(value).coordinates;
         }
 
         function villageContinent(village) {
@@ -6822,7 +6862,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 enemyPoints: Number(risk.enemy.points) || 0,
                 enemyPlayerName: risk.enemy.playerName,
                 enemyAllyTag: risk.enemyTribe?.tag || risk.enemyTribe?.name || '',
-                classification: risk.classification
+                classification: risk.classification,
+                outsideRange: Boolean(risk.outsideRange),
+                customRequired: Boolean(risk.customRequired)
             };
             if (!includeDefenseDetails) return village;
             village.required = Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, Number(risk.required?.[unit.id]) || 0]));
@@ -6853,6 +6895,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 analysisMode: state.analysisMode,
                 selectionLabel: state.coordinateSelectionLabel,
                 requestedCoordinates: state.analysisMode === 'coordinates' ? [...state.requestedCoordinates] : [],
+                coordinateRequirements: state.analysisMode === 'coordinates'
+                    ? Object.fromEntries([...state.coordinateRequirements.entries()])
+                    : {},
                 sourceTroopsSavedAt: state.troopDataInfo.savedAt || null,
                 thresholds: state.thresholds,
                 minEnemyPoints: state.minEnemyPoints,
@@ -7242,10 +7287,11 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             return { risks, threateningEnemies: [...threateningEnemies.values()], threatRelations };
         }
 
-        function classifyRisks(risks, troopIndex, thresholds) {
+        function classifyRisks(risks, troopIndex, thresholds, coordinateRequirements = new Map()) {
             risks.forEach((risk) => {
                 const troopRecord = troopIndex.get(risk.allied.coordinate) || null;
-                const required = thresholds[risk.bucket] || Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, 0]));
+                const customRequired = coordinateRequirements.get(risk.allied.coordinate) || null;
+                const required = customRequired || thresholds[risk.bucket] || Object.fromEntries(DEFENSE_UNITS.map((unit) => [unit.id, 0]));
                 const actual = {};
                 const outside = {};
                 const deficits = {};
@@ -7259,6 +7305,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
                 risk.troopRecord = troopRecord;
                 risk.required = required;
+                risk.customRequired = Boolean(customRequired);
                 risk.actual = actual;
                 risk.outside = outside;
                 risk.deficits = deficits;
@@ -7269,6 +7316,31 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         : 'needs';
             });
             return risks;
+        }
+
+        function addExplicitCoordinateRisks(risks, villages, enemies, minutesPerField, allies, coordinateRequirements) {
+            if (!(coordinateRequirements instanceof Map) || !coordinateRequirements.size) return risks;
+            const result = [...risks];
+            const existing = new Set(result.map((risk) => risk.allied.coordinate));
+            villages.forEach((village) => {
+                if (existing.has(village.coordinate) || !coordinateRequirements.has(village.coordinate)) return;
+                const nearest = nearestEnemyForVillage(village, enemies, minutesPerField, allies);
+                if (!nearest) return;
+                const hours = nearest.minutes / 60;
+                result.push({
+                    bucket: bucketFor(hours) || HOUR_LIMITS[HOUR_LIMITS.length - 1],
+                    outsideRange: !bucketFor(hours),
+                    hours,
+                    minutes: nearest.minutes,
+                    distance: nearest.distance,
+                    threatCount: 0,
+                    allied: village,
+                    enemy: nearest.enemy,
+                    alliedTribe: allies.get(village.allyId),
+                    enemyTribe: nearest.tribe
+                });
+            });
+            return result.sort((a, b) => a.hours - b.hours || a.allied.coordinate.localeCompare(b.allied.coordinate));
         }
 
         function nearestEnemyForVillage(village, enemies, minutesPerField, allies) {
@@ -7319,6 +7391,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     actual,
                     required: risk?.required || null,
                     deficits: risk?.deficits || null,
+                    customRequired: Boolean(risk?.customRequired),
                     status: risk?.classification || (troopRecord ? 'outside' : 'missing')
                 };
             }).sort((a, b) => (
@@ -7782,7 +7855,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             if (state.analysisMode !== 'coordinates') return '';
             const withTroops = state.coordinateReview.filter((item) => item.troopRecord).length;
             const needs = state.coordinateReview.filter((item) => item.risk?.classification === 'needs').length;
-            const outside = state.coordinateReview.filter((item) => !item.risk).length;
+            const outside = state.coordinateReview.filter((item) => !item.risk || item.risk.outsideRange).length;
+            const individualMinimums = state.coordinateReview.filter((item) => (
+                state.coordinateRequirements.has(item.village.coordinate)
+            )).length;
             const troopDetails = (item) => {
                 if (!item.troopRecord) return '<span class="cbp-troop-missing">Sem coleta de tropas para esta aldeia.</span>';
                 return TROOP_OVERVIEW_UNITS.map((unit) => {
@@ -7799,7 +7875,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             };
             return `<section class="cbp-coordinate-review">
                 <div class="cbp-coordinate-review-header">
-                    <div><h4>Alvos da OP por coordenadas</h4><small>Mostra o inimigo mais próximo e separa as tropas paradas na aldeia das tropas que estão fora.</small></div>
+                    <div><h4>Alvos da OP por coordenadas</h4><small>Os mínimos individuais informados após cada coordenada substituem os mínimos por faixa e são levados ao Distribuidor de Apoios.</small></div>
                     <div class="cbp-coordinate-review-actions">
                         <button type="button" class="btn" data-action="export-op-coordinates" ${state.coordinateReview.length ? '' : 'disabled'}>Exportar coordenadas</button>
                         <button type="button" class="btn btn-confirm-yes" data-action="export-op-data" ${state.coordinateReview.length ? '' : 'disabled'}>Exportar dados da OP</button>
@@ -7809,11 +7885,13 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         <span><strong>${formatNumber(state.coordinateReview.length)}</strong> encontradas</span>
                         <span><strong>${formatNumber(withTroops)}</strong> com tropas</span>
                         <span><strong>${formatNumber(needs)}</strong> precisam blind</span>
+                        <span><strong>${formatNumber(individualMinimums)}</strong> com mínimo individual</span>
                         <span><strong>${formatNumber(outside)}</strong> fora de 8h</span>
                         <span><strong>${formatNumber(state.missingRequestedCoordinates.length)}</strong> ignoradas</span>
                     </div>
                 </div>
                 ${state.missingRequestedCoordinates.length ? `<p class="cbp-coordinate-warning"><b>Não encontradas, bárbaras ou pertencentes às tribos inimigas:</b> ${escapeHtml(state.missingRequestedCoordinates.join(' · '))}</p>` : ''}
+                ${state.duplicateRequirementCoordinates.length ? `<p class="cbp-coordinate-warning"><b>Coordenadas repetidas consolidadas pelo maior valor de cada tropa:</b> ${escapeHtml(state.duplicateRequirementCoordinates.join(' · '))}</p>` : ''}
                 ${state.coordinateReview.length ? `<div class="cbp-table-wrap"><table class="vis cbp-table">
                     <thead><tr><th>Coordenada</th><th>Aldeia</th><th>Jogador</th><th>Pontos</th><th>Continente</th><th>Faixa/status</th><th>Jogador inimigo</th><th>Tribo</th><th>Aldeia inimiga</th><th>Coord. inimiga</th><th>Pontos inimigos</th><th>Distância</th><th>Tempo de nobre</th><th>Tropas</th></tr></thead>
                     <tbody>${state.coordinateReview.map((item) => {
@@ -7824,7 +7902,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         <td>${escapeHtml(item.village.playerName || '-')}</td>
                         <td>${formatNumber(item.village.points)}</td>
                         <td><strong>${escapeHtml(villageContinent(item.village))}</strong></td>
-                        <td><strong>${item.risk ? `${escapeHtml(bucketLabel(item.risk.bucket))} · ${escapeHtml(classificationLabel(item.risk.classification))}` : 'Acima de 8h'}</strong></td>
+                        <td><strong>${item.risk ? `${item.risk.outsideRange ? 'Acima de 8h' : escapeHtml(bucketLabel(item.risk.bucket))} · ${escapeHtml(classificationLabel(item.risk.classification))}${item.customRequired ? ' · mínimo individual' : ''}` : 'Acima de 8h'}</strong></td>
                         <td>${escapeHtml(nearest?.enemy?.playerName || '-')}</td>
                         <td>${escapeHtml(nearest?.tribe?.tag || nearest?.tribe?.name || '-')}</td>
                         <td>${escapeHtml(nearest?.enemy?.name || '-')}</td>
@@ -7960,7 +8038,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             const thresholds = readThresholds(panel);
             const requestedAllies = splitTribeInput(alliedInput);
             const requestedEnemies = splitTribeInput(enemyInput);
-            const requestedCoordinates = parseCoordinateInput(coordinateInput);
+            const coordinateRequests = parseCoordinateRequests(coordinateInput);
+            const requestedCoordinates = coordinateRequests.coordinates;
 
             if (!requestedEnemies.length || (analysisMode === 'tribes' && !requestedAllies.length)) {
                 notify(analysisMode === 'coordinates'
@@ -7970,6 +8049,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             }
             if (analysisMode === 'coordinates' && !requestedCoordinates.length) {
                 notify('Cole ao menos uma coordenada aliada para analisar.', 'error');
+                return;
+            }
+            if (analysisMode === 'coordinates' && coordinateRequests.invalidLines.length) {
+                notify(`Formato inválido na(s) linha(s) ${coordinateRequests.invalidLines.join(', ')}. Use COORDENADA LANCEIROS/ESPADACHINS/EXPLORADORES/CAVALARIA PESADA.`, 'error');
                 return;
             }
             if (requestedCoordinates.length > 1000) {
@@ -7987,6 +8070,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
             state.selectedContinents = analysisMode === 'tribes' ? [...continentResolution.continents].sort() : [];
             state.ignoredEnemyPlayers = ignoredEnemyPlayers;
             state.requestedCoordinates = requestedCoordinates;
+            state.coordinateRequirements = analysisMode === 'coordinates' ? coordinateRequests.requirements : new Map();
+            state.duplicateRequirementCoordinates = analysisMode === 'coordinates' ? coordinateRequests.duplicateCoordinates : [];
             state.missingRequestedCoordinates = [];
             state.coordinateReview = [];
             state.coordinateSelectionLabel = analysisMode === 'coordinates' ? coordinateSelectionLabel : '';
@@ -8087,11 +8172,16 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 const riskCalculation = calculateRisks(eligibleAlliedVillages, eligibleEnemyVillages, minutesPerField, allies);
                 state.mapEnemies = riskCalculation.threateningEnemies;
                 state.threatRelations = riskCalculation.threatRelations;
+                const risksForClassification = analysisMode === 'coordinates'
+                    ? addExplicitCoordinateRisks(riskCalculation.risks, eligibleAlliedVillages, eligibleEnemyVillages, minutesPerField, allies, state.coordinateRequirements)
+                    : riskCalculation.risks;
                 state.results = classifyRisks(
-                    riskCalculation.risks,
+                    risksForClassification,
                     troopData.index,
-                    thresholds
+                    thresholds,
+                    analysisMode === 'coordinates' ? state.coordinateRequirements : new Map()
                 );
+                state.mapEnemies = [...new Map([...state.mapEnemies, ...state.results.map((risk) => risk.enemy)].map((village) => [village.id, village])).values()];
                 state.coordinateReview = analysisMode === 'coordinates'
                     ? buildCoordinateReview(eligibleAlliedVillages, state.results, troopData.index, eligibleEnemyVillages, minutesPerField, allies)
                     : [];
@@ -8224,7 +8314,12 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function exportOperationCoordinates() {
-            const coordinates = state.coordinateReview.map((item) => item.village.coordinate);
+            const coordinates = state.coordinateReview.map((item) => {
+                const required = state.coordinateRequirements.get(item.village.coordinate);
+                return required
+                    ? `${item.village.coordinate} ${DEFENSE_UNITS.map((unit) => Number(required[unit.id]) || 0).join('/')}`
+                    : item.village.coordinate;
+            });
             if (!coordinates.length) {
                 notify('Nenhum alvo da OP para exportar.', 'error');
                 return;
@@ -8247,6 +8342,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                 'Jogador inimigo mais próximo', 'Tribo inimiga', 'Aldeia inimiga', 'Coordenada inimiga', 'Pontos inimigos',
                 'Distância em campos', 'Tempo de nobre em minutos', 'Tempo de nobre'
             ];
+            DEFENSE_UNITS.forEach((unit) => headers.push(`${unit.label} mínimo solicitado`, `${unit.label} ainda necessário`));
             TROOP_OVERVIEW_UNITS.forEach((unit) => {
                 headers.push(`${unit.label} na aldeia`, `${unit.label} fora`);
             });
@@ -8260,6 +8356,9 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     nearest?.enemy?.coordinate || '', nearest?.enemy?.points || '', nearest ? Number(nearest.distance).toFixed(2) : '',
                     nearest ? Math.round(nearest.minutes) : '', nearest ? formatDuration(nearest.minutes) : ''
                 ];
+                DEFENSE_UNITS.forEach((unit) => {
+                    row.push(item.required ? (Number(item.required[unit.id]) || 0) : '', item.deficits ? (Number(item.deficits[unit.id]) || 0) : '');
+                });
                 TROOP_OVERVIEW_UNITS.forEach((unit) => {
                     row.push(item.troopRecord ? (Number(item.home?.[unit.id]) || 0) : '', item.troopRecord ? (Number(item.transit?.[unit.id]) || 0) : '');
                 });
@@ -8578,10 +8677,10 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                         <label>Nome deste lote de alvos (opcional)
                             <input type="text" name="coordinate_label" value="${escapeHtml(config.coordinateSelectionLabel || '')}" placeholder="Ex.: OP no front K54">
                         </label>
-                        <label>Coordenadas dos possíveis alvos da OP — separadas por espaço, vírgula, ; ou linha
-                            <textarea name="manual_coordinates" placeholder="419|733 419|734 413|733 417|734">${escapeHtml(config.coordinateInput || '')}</textarea>
+                        <label>Alvos e mínimos — uma linha por aldeia no formato COORDENADA LANÇA/ESPADA/EXPLORADOR/CP
+                            <textarea name="manual_coordinates" placeholder="487|571 35000/35000/5000/7000\n488|573 25000/25000/5000/5000">${escapeHtml(config.coordinateInput || '')}</textarea>
                         </label>
-                        <p>O script localiza jogador, aldeia e continente; calcula o tempo de nobre do inimigo mais próximo; e lê as tropas da última coleta em Tropas da Tribo. “Na aldeia” e “fora” são exibidos separadamente.</p>
+                        <p>Também continua aceitando somente coordenadas. Quando os quatro valores são informados, eles substituem os mínimos por faixa nessa aldeia e seguem salvos para o Distribuidor de Apoios. Coordenadas repetidas são consolidadas usando o maior valor de cada tropa.</p>
                     </div>
                     <label>Tribos inimigas — tags ou nomes separados por ;
                         <textarea name="enemy_tribes" placeholder="tagTribo1;tagTribo2">${escapeHtml(config.enemyInput || '')}</textarea>
@@ -9677,6 +9776,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
         }
 
         function urgencyLabel(target) {
+            if (target.outsideRange) return 'alvo da OP acima de 8h';
             const bucket = number(target.bucket);
             if (bucket === 1) return 'até 1h de nobre';
             return `até ${bucket}h de nobre`;
