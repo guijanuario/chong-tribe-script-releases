@@ -3200,7 +3200,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
     const runtimeKey = '__chongTribeSuiteRuntime';
     if (window[runtimeKey]) return;
-    window[runtimeKey] = { version: '2.45.15', loadedAt: new Date().toISOString() };
+    window[runtimeKey] = { version: '2.45.16', loadedAt: new Date().toISOString() };
     const route = new URLSearchParams(window.location.search);
     const screen = route.get('screen');
     const mode = route.get('mode');
@@ -9099,7 +9099,7 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
 
         function parsePlayerList(value) {
             return new Set(String(value || '')
-                .split(/[;\n]+/)
+                .split(/[;,\r\n]+/)
                 .map((name) => normalizeName(name))
                 .filter(Boolean));
         }
@@ -10590,8 +10590,8 @@ window.__chongEmbeddedMenuConfig = {"version":"1.1","lastUpdated":"2024-12-16","
                     <label class="cda-blacklist"><span>Continentes onde não queremos blindar — separados por espaço, ; ou linha</span><textarea name="continent_blacklist" placeholder="Ex.: K64; K65; K74">${escapeHtml(config.continentBlacklistInput || '')}</textarea></label>
                     <label class="cda-blacklist"><span>Continentes que não podem enviar apoio — aldeias de origem bloqueadas</span><textarea name="source_continent_blacklist" placeholder="Ex.: K54; K55">${escapeHtml(config.sourceContinentBlacklistInput || '')}</textarea></label>
                     <label class="cda-blacklist"><span>Rotas de apoio — um destino por linha no formato DESTINO: ORIGENS PERMITIDAS</span><textarea name="continent_routes" placeholder="K74: K74, K73, K63&#10;K64: K63, K64&#10;K54: K64, K54, K53">${escapeHtml(config.continentRoutesInput || '')}</textarea></label>
-                    <label class="cda-blacklist"><span>Blacklist geral de jogadores aliados — não enviam apoio e não recebem blindagem</span><textarea name="allied_player_blacklist" placeholder="Ex.: JogadorQueSaiu; JogadorSemParticipação">${escapeHtml(config.alliedPlayerBlacklistInput || '')}</textarea></label>
-                    <label class="cda-blacklist"><span>Blacklist de jogadores doadores — nomes separados por ; ou linha</span><textarea name="player_blacklist" placeholder="Ex.: JogadorFront1; JogadorFront2">${escapeHtml(config.playerBlacklistInput || '')}</textarea></label>
+                    <label class="cda-blacklist"><span>Blacklist geral de jogadores aliados — não enviam apoio e não recebem blindagem; separe por vírgula, ; ou linha</span><textarea name="allied_player_blacklist" placeholder="Ex.: JogadorQueSaiu; JogadorSemParticipação">${escapeHtml(config.alliedPlayerBlacklistInput || '')}</textarea></label>
+                    <label class="cda-blacklist"><span>Blacklist de jogadores doadores — nomes separados por vírgula, ; ou linha</span><textarea name="player_blacklist" placeholder="Ex.: JogadorFront1; JogadorFront2">${escapeHtml(config.playerBlacklistInput || '')}</textarea></label>
                     <label class="cda-blacklist"><span>Nicks inimigos que não devem contar como ameaça — separados por ; ou linha</span><textarea name="ignored_enemy_players" placeholder="Ex.: JogadorQueVemParaTribo">${escapeHtml(config.ignoredEnemyInput || '')}</textarea></label>
                     <div class="cda-actions">
                         <button type="button" class="btn cda-primary" data-action="distribute">Distribuir apoios</button>
